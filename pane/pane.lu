@@ -571,3 +571,62 @@ fn pow2(n: int) -> int {
 
 	r
 }
+
+/// Whether the directory changed since it was loaded: 0 no, 1 yes (its
+/// own time moved: a name was added, removed or renamed), 2 it is gone
+pub fn changed(p: Pane) -> int {
+	var answer = 0
+	region scratch {
+		var failed = false
+		let d = fs.stat(path_of(p)) else |e| {
+			failed = true
+			match e {
+				not_found => {
+					answer = 2
+				}.
+				denied => {},
+				io => {},
+			}
+
+			no_info(1)
+		}
+
+		if !failed && (d.mtime_s != p.seen_s || d.mtime_ns != p.seen_ns) {
+			answer = 1
+		}
+	}
+
+	answer
+}
+
+
+/// The pane's directory is gone: walk up to the nearest ancestor that
+/// can be listed. Answers false when not even `/` can be.
+pub fn recover(mut p: Pane) -> bool {
+	var ok = false
+
+	region scratch {
+		var here = path_of(p)
+
+		loop {
+			let parent = fs.parent(here) else "/"
+			set_path(mut p, parent)
+
+			if load_keeping(mut p, List[byte]()) == 0 {
+				ok = true
+				break
+			}
+
+			if parent == here {
+				break
+			}
+
+			here = parent
+		}
+	}
+
+	p.top = 0
+	ok
+}
+
+
