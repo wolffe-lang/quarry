@@ -1,3 +1,5 @@
+//! member: false
+
 fn main() -> !int {
 
 	0
