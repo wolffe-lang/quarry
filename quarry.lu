@@ -1,32 +1,68 @@
 //! member: false
-//! quarry, step 2: keys, not bytes. The same terminal contract as step 1,
-//! but every key is printed by name
+//! quarry, step 3: a screen you diff, not redraw. Two framed panes of 
+//! placeholder rows and a reverse-video bar the arrows move. The status
+//! line shows how many bytes the last frame wrote
 
+use grid
 use keys
+use std.env
 use std.fs
 use std.signal
 use std.time
 use tty
 
-fn say(line: str) {
-	var b = List[byte]()
+/// Box drawing unless the terminal is dumb, color unless NO_COLOR.
+fn look_from_env() -> grid.Look {
+	let term = env.get("TERM") else ""
+	let no_color = env.get("NO_COLOR") else ""
+	let gl = if term == "" || term == "dumb" then grid.ascii_glyphs() else grid.box_glyphs()
 
-	for x in line.bytes() {
-		(mut b).push(x)
-	}
-
-	(mut b).push(13 as byte)
-	(mut b).push(10 as byte)
-
-	tty.write(b) else |_| {}
+	grid.Look { gl: gl, color: no_color == "" && term != "dumb" }
 }
 
+/// Draw the whole demo screen into `g`.
+fn draw(mut g: grid.Grid, look: grid.Look, bar: int, last_bytes: int) {
+	grid.clear(mut g)
+	let half = g.cols / 2
+	let h = g.rows - 1
 
+	grid.frame(mut g, 0, 0, h, half, look.gl, grid.DEFAULT)
+	grid.frame(mut g, 0, half, h, g.cols - half, look.gl, grid.DEFAULT)
 
+	var row = 1
+	while row < h -1 {
+		let attr = if row - 1 == bar then grid.ATTR_REVERSE else 0
+		let fg = if look.color && row % 3 == 0 then 4 else grid.DEFAULT
+
+		grid.fill(mut g, row, 1, half - 2, 32, fg, grid.DEFAULT, attr)
+		grid.puts(mut g, row, 2, half - 4, "entry {row - 1}", fg, grid.DEFAULT, attr)
+		grid.puts(
+			mut g,
+			row, half + 2,
+			g.cols - half - 4,
+			"entry {row - 1}",
+			grid.DEFAULT,
+			grid.DEFAULT, 0,
+		)
+
+		row += 1
+	}
+
+	let _ = grid.puts(
+		mut g,
+		g.rows - 1, 
+		0,
+		g.cols - 1,
+		" last frame: {last_bytes} bytes   q quits",
+		grid.DEFAULT, 
+		grid.DEFAULT,
+		0,
+	)
+}
 
 fn main() -> !int {
 	var t = tty.open() else |e| {
-		eprint("quarry: standard input and output must be a terminal ({e})")
+		eprint("quarry: standard input and ouput must be a terminal ({e})")
 		return 1
 	}
 
@@ -35,15 +71,34 @@ fn main() -> !int {
 		return 1
 	}
 
-	say("quarry: {t.cols}x{t.rows}.Press keys; q quits.")
+	let look = look_from_env()
+	var front = grid.new(t.rows, t.cols)
+
+	grid.invalidate(mut front)
+
+	var back = grid.new(t.rows, t.cols)
+	var out = List[byte]()
+	var bar = 0
+	var last_bytes = 0
 	var files = List[fs.File]()
+
 	(mut files).push(fs.stdin())
+
 	var dec = keys.new()
 	var k = keys.Key { code: 0, mods: 0 }
 	var running = true
 
 	while running {
-		// Sleep until a key, a signal, or the lone-ESC deadline.
+		draw(mut back, look, bar, last_bytes)
+		(mut out).reset()
+		last_bytes = grid.render(front, back, mut out)
+
+		tty.write(out) else |_| {
+			break
+		}
+
+		grid.assign(mut front, back)
+
 		let now = time.monotonic_ns() / 1000000
 		let due = keys.deadline(dec)
 		let wait_ms = if due < 0 then -1 else if due > now then due - now else 0
@@ -55,10 +110,13 @@ fn main() -> !int {
 		if w.meaning != 0 {
 			if w.meaning & signal.resize() != 0 {
 				tty.refresh_size(mut t)
-				say("resized: {t.cols}x{t.rows}")
+				grid.resize(mut front, t.rows, t.cols)
+				grid.invalidate(mut front)
+				grid.resize(mut back, t.rows, t.cols)
+
 				continue
 			}
-			
+
 			break
 		}
 
@@ -71,9 +129,12 @@ fn main() -> !int {
 		}
 
 		while keys.next(mut dec, time.monotonic_ns() / 1000000, mut k) {
-			say(keys.name(k))
 			if k.code == 113 && k.mods == 0 {
 				running = false
+			} else if k.code == keys.K_DOWN && bar < t.rows - 4 {
+				bar += 1
+			} else if k.code == keys.K_UP && bar > 0 {
+				bar -= 1
 			}
 		}
 	}
