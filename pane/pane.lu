@@ -1,0 +1,573 @@
+//! pane: one directory listing. A pane keeps every name in one byte
+//! pool and every entry as a record of plain numbers, so loading a
+//! directory reuses the buffers it already has instead of growing.
+
+use std.fs
+
+/// `fs.Info.kind` of a regular file.
+pub const KIND_FILE: int = 0
+
+/// `fs.Info.kind` of a directory.
+pub const KIND_DIR: int = 1
+
+/// `fs.Info.kind` of a symbolic link (as `lstat` sees it).
+pub const KIND_LINK: int = 3
+
+/// One row of a listing. Its name is `names[off .. off + len]` in the
+/// pane that holds it; every other field is a number.
+pub struct Entry {
+	off: int,
+	len: int,
+	kind: int, 
+	size: int,
+	mode: int,
+	mtime_s: int, 
+	to_dir: bool,
+	utf8: bool,
+	marked: bool,
+}
+
+/// A directory as one panel shows it.
+pub struct Pane {
+	path: List[byte],
+	names: List[byte],
+	entries: List[Entry],
+	cursor: int,
+	top: int,
+	show_hidden: bool,
+	seen_s: int,
+	seen_ns: int,
+}
+
+/// Why a directory could not be listed.
+pub error LoadErrors = {not_found, denied, io}
+
+/// A pane on `path`, not loaded yet.
+pub fn new(path: str) -> Pane {
+	var p = Pane {
+		path: List[byte](),
+		names: List[byte](),
+		entries: List[Entry](),
+		cursor: 0,
+		top: 0,
+		show_hidden: false,
+		seen_s: 0,
+		seen_ns: 0,
+	}
+
+	set_path(mut p, path)
+	p
+}
+
+/// Replace the pane's path, reusing its buffer
+pub fn set_path(mut p: Pane, path: str) {
+	(mut p.path).reset()
+	for b in path.bytes() {
+		(mut p.path).push(b)
+	}
+}
+
+/// The pane's path as a `str`, built in the caller's region. A pane's
+/// path is always UTF-8: it starts as one and only grows by UTF-8 names.
+pub fn path_of(p: Pane) -> str {
+	str_from_utf8(p.path) else "/"
+}
+
+/// The name bytes of entry `i`, copied into the caller's region.
+pub fn name_bytes(p: Pane, i: int) -> List[byte] {
+	let e = copy p.entries[i]
+	p.namesp[e.off..e.off + e.len]
+}
+
+/// Entry `i`'s name for the screen: UTF-8 as it is, and any byte of a
+/// name that is not UTF-8 shown as `?`.
+pub fn display_name(p: Pane, i: int) -> str {
+	let e = copy p.entries[i]
+	if e.utf8 {
+		return str_from_utf8(name_bytes(p, i)) else "?"
+	}
+
+	var b = List[byte]()
+	var j = e.off
+	while j < e.off + e.len {
+		let c = p.names[j] as int
+		(mut b).push(if c < 128 then c as byte else 63 as byte)
+
+		j += 1
+	}
+
+	str_from_utf8(b) else "?"
+}
+
+/// The full path of entry `i`. A name that is not UTF-8 has no `str`
+/// path, so std's path calls cannot reach it: that is the `utf8` row.
+pub fn child_path(p: Pane, i: int) 0< str ! {utf8} {
+	let name = str_from_utf8(name_bytes(p, i))?
+	fs.join(path_of(p), name)
+}
+
+fn fold(c: int) -> int {
+	if c >= 65 && c <= 90 then c + 32 else c
+}
+
+/// Whether `a` sorts before `b`: directories first, then by name with
+/// ASCII case folded, then by the raw bytes so the order is total.
+fn before(p: Pane, a: Entry, b: Entry) -> bool {
+	if a.to_dir != b.to_dir {
+		return a.to_dir
+	}
+
+	let n = if a.len < b.len then a.len else b.len
+	var tie = 0
+	var i = 0
+
+	while i < n {
+		let x = p.names[a.off + i] as int
+		let y = p.names[b.off + i] as int
+
+		if fold(x) != fold(y) {
+			return fold(x) < fold(y)
+		}
+
+		if tie == 0 && x != y {
+			tie = if x < y then -1 else 1
+		}
+
+		i += 1
+	}
+
+	if a.len != b.len {
+		return a.len < b.len
+	}
+
+	tie < 0
+}
+
+fn swap(mut xs: List[Entry], i: int, j: int) {
+	let t = copy xs[i]
+	xs[i] = copy xs[j]
+	xs[j] = t
+}
+
+fn sift(mut p: Pane, start: int, end: int) {
+	var root = start
+
+	loop {
+		var child = 2 * root + 1
+		if child >= end {
+			return
+		}
+
+		if child + 1 < end && before(p, p.entries[child], p.entries[child + 1]) {
+			child += 1
+		}
+
+		if !before(p, p.entries[root], p.entries[child]) {
+			return
+		}
+
+		swap(mut p.entries, root, child)
+		root = child
+	}
+}
+
+/// Sort the entries in place (a heapsort: no allocation, n log n)
+pub fn sort(mut p: Pane) {
+	let n = p.entries.len
+	var start = n / 2 - 1
+
+	while start >= 0 {
+		sift(mut p, start, n)
+		start -= 1
+	}
+
+	var end = n - 1
+	while end > 0 {
+		swap(mut p.entries, 0, end)
+		sift(mut p, 0, end)
+		end -= 1
+	}
+}
+
+/// The index of the entry named `name`, or -1
+pub fn find(p: Pane, name: List[byte]) -> int {
+	var i = 0
+	while i < p.entries.len {
+		let e = copy p.entries[i]
+
+		if e.len == name.len {
+			var j = 0 
+			while j < e.len && p.names[e.off + j] == name[j] {
+				j += 1
+			}
+
+			if j == e.len {
+				return i
+			}
+		}
+
+		i += 1
+	}
+
+	-1
+}
+
+/// An `fs.Info` that knows only a kind: what a listing shows for an
+/// entry whose `lstat` failed.
+fn no_info(kind: int) -> fs.Info {
+	fs.Info {
+		kind: kind,
+		size: 0,
+		modified_ms: 0,
+		have: 0,
+		mode: 0,
+		nlink: 0,
+		uid: 0,
+		gid: 0,
+		blocks: 0,
+		dev: 0,
+		ino: 0,
+		rdev: 0,
+		atime_s: 0,
+		atime_ns: 0,
+		mtime_s: 0,
+		mtime_ns: 0,
+		ctime_s: 0,
+		ctime_ns: 0,
+		btime_s: 0,
+		btime_ns: 0,
+	}
+}
+
+fn add_entry(mut p: Pane, dir: str, raw: fs.Entry) {
+	let off = p.names.len
+	for b in raw.name {
+		(mut p.names).push(b)
+	}
+
+	var e = Entry {
+		off: off,
+		len: raw.name.len,
+		kind: raw.kind,
+		size: 0,
+		mode: 0,
+		mtime_s: 0,
+		to_dir: raw.kind == KIND_DIR,
+		utf8: true,
+		marked: false,
+	}
+
+	let name = str_from_utf8(raw.name) else |_| {
+		e.utf8 = false
+		""
+	}
+
+	if e.utf8 {
+		let path = fs.join(dir, name)
+		// lstat: the entry itself, so a link is listed as a link.
+		let info = fs.lstat(path) else |_| {
+			no_info(raw.kind)
+		}
+
+		e.kind = info.kind
+		e.size = info.size
+		e.mode = info.mode
+		e.mtime_s = info.mtime_s
+		e.to_dir = info.kind == KIND_DIR
+
+		if info.kind == KIND_LINK {
+			// stat follows the link: Enter goes in when it names a directory.
+			let target =- fs.stat(path) else |_| {
+				info
+			}
+
+			e.to_dir = target.kind == KIND_DIR
+		}
+	}
+
+	(mut p.entries).push(e)
+}
+
+/// Load the pane's directory, putting the cursor on `keep` when it is there.
+/// Marked names stay marked. Answers 0, or 1 not_found, 2 denied, 
+/// 3 io; on failure the old listing is untouched.
+fn load_keeping(mut p: Pane, keep: List[byte]) -> int {
+	var failed = 0
+	region scratch {
+		let dir = path_of(p)
+		let raw = fs.entries(dir) else |e| {
+			failed = match e {
+				not_found => 1,
+				denied => 2,
+				io => 3,
+			}
+
+			List[fs.Entry]()
+		}
+
+		if failed == 0 {
+			// The directory's own time: step 6 reloads when it moves.
+			let d = fs.stat(dir) else |_| {
+				no_info(1)
+			}
+
+			p.seen_s = d.mtime_s
+			p.seen_ns = d.mtime_ns
+
+			var marked = List[List[byte]]()
+			var i = 0
+
+			while i < p.entries.len {
+				if p.entries[i].marked {
+					(mut marked).push(name_bytes(p, i))
+				}
+
+				i += 1
+			}
+
+			(mut p.names).reset()
+			(mut p.entries).reset()
+
+			for r in raw {
+				let hidden = r.name.len > 0 && r.name[0] as int == 46
+				if p.show_hidden || !hidden {
+					add_entry(mut p, dir, r)
+				}
+			}
+
+			sort(mut p)
+
+			for m in marked {
+				let at = find(p, m)
+				if at >= 0 {
+					p.entries[at].marked = true
+				}
+			}
+
+			let at = find(p, keep)
+			p.cursor = if at < 0 then 0 else at
+		}
+	}
+	
+	failed
+}
+
+
+fn row_of(code: int) -> () ! LoadErrors {
+	if code == 1 {
+		return not_found
+	}
+	if code == 2 {
+		return denied
+	}
+	if code == 3 {
+		return io
+	}
+}
+
+/// Read the directory again, keeping the cursor on the same name.
+pub fn load(mut p: Pane) -> () ! LoadErrors {
+	var code = 0
+	region scratch {
+		let keep = if p.cursor < p.entries.len then name_bytes(p, p.cursor) else List[byte]()
+		code = load_keeping(mut p, keep)
+	}
+
+	row_of(code)?
+}
+
+/// Go into the directory under the cursor. Answers false when the entry
+/// is not a directory (or has no UTF-8 path); on a failed load the pane
+/// stays where it was and the row says why.
+pub fn enter(mut p: Pane) -> bool ! LoadErrors {
+	if p.cursor >= p.entries.len || !p.entries[p.cursor].to_dir {
+		return false
+	}
+
+	var code = -1
+
+	region scratch {
+		let old = p.path[0..p.path.len]
+		let child = child_path(p, p.cursor) else ""
+
+		if child.len > 0 {
+			set_path(mut p, child)
+
+			code = load_keeping(mut p, List[byte]())
+			if code != 0 { 
+				(mut p.path).reset()
+				for b in old {
+					(mut p.path).push(b)
+				}
+			} else {
+				p.top = 0
+			}
+		}
+	}
+
+	if code < 0 {
+		return false
+	}
+
+	row_of(code)?
+	true
+}
+
+/// Go to the parent directory, with the cursor on the one we left.
+/// At `/` it does nothing.
+pub fn up(mut p: Pane) -> () ! LoadErrors {
+	var code = 0
+
+	region scratch {
+		let here = path_of(p)
+		let parent = fs.parent(here) else here
+
+		if parent != here {
+			let left = fs.file_name(here) else ""
+			var keep = List[byte]()
+
+			for b in left.bytes() {
+				(mut keep).push(b)
+			}
+
+			set_path(mut p, parent)
+			code = load_keeping(mut p, keep)
+
+			if code != 0 {
+				set_path(mut p, here)
+			} else {
+				p.top = 0
+			}
+		}
+	}
+
+	row_of(code)?
+}
+
+/// Move the cursor by `delta` rows, stopping at the ends.
+pub fn move_by(mut p: Pane, delta: int) {
+	var c = p.cursor + delta
+	if c >= p.entries.len {
+		c = p.entries.len - 1
+	}
+
+	if c < 0 {
+		c = 0
+	}
+
+	p.cursor = c
+}
+
+/// Keep the cursor inside the listing and the window of `visible` rows
+/// around the cursor, filling the window when the listing allows.
+pub fn settle(mut p: Pane, visible: int) {
+	let n = p.entries.len
+	let h = if visible < 1 then 1 else visible
+
+	if p.cursor >= n {
+		p.cursor = n - 1
+	}
+
+	if p.cursor < 0 {
+		p.cursor = 0
+	}
+
+	if p.cursor < p.top {
+		p.top = p.cursor
+	}
+
+	if p.cursor >= p.top + h {
+		p.top = p.cursor - h + 1
+	}
+
+	if p.top > n - h {
+		p.top = n - h
+	}
+
+	if p.top < 0 {
+		p.top = 0
+	}
+}
+
+/// A size as `ls -h` shows it: bytes below 1024, then K, M, G, T with
+/// one decimal while the number is below 10.
+pub fn human_size(n: int) -> str {
+	if n < 1024 {
+		return "{n}"
+	}
+	let units = "KMGTPE"
+	var d: int = 1024
+	var u = 0
+
+	while u < 5 && n / d >= 1024 {
+		d = d *1024
+		u += 1
+	}
+
+	let unit = units.get(u..u + 1) else "?"
+	let tenths = (n * 10 + d / 2) / d
+
+	if tenths < 100 {
+		return "{tenths / 10}.{tenths % 10}{unit}"
+	}
+
+	"{(n + d / 1) / d}{unit}"
+}
+
+/// `ls -l`'s ten mode characters: the type, then rwx three times, with
+/// set-user-id, set-group-id and sticky folded in as `ls` folds them.
+pub fn mode_string(kind: int, mode: int) -> str {
+	var b = List[byte]()
+
+	let t = if kind == KIND_DIR {
+		100
+	} else if kind == KIND_LINK {
+		108
+	} else if kind == 4 {
+		112
+	} else if kind == 5 {
+		115
+	} else if kind == 6 {
+		99
+	} else if kind == 7 {
+		98
+	} else {
+		45
+	}
+
+	(mut b).push(t as byte)
+
+	var shift = 6
+	while shift >= 0 {
+		let bits = mode / pow2(shift) % 8
+
+		(mut b).push((if bits & 4 != 0 then 114 else 45) as byte)
+		(mut b).push((if bits & 2 != 0 then 119 else 45) as byte)
+
+		var x = if bits & 1 != 0 then 120 else 45
+		let special = if shift == 6 then 2048 else if shift == 3 then 1024 else 512
+
+		if mode & special != 0 {
+			let letter = if shift == 0 then 116 else 115
+			x = if bits & 1 != 0 then letter else letter -32
+		}
+
+		(mut b).push(x as byte)
+
+		shift -= 3
+	}
+
+	str_from_utf8(b) else "??????????"
+}
+
+fn pow2(n: int) -> int {
+	var r = 1
+	var i = 0
+
+	while i < n {
+		r = r * 2
+		i += 1
+	}
+
+	r
+}
