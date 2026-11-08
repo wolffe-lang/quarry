@@ -1,0 +1,148 @@
+//! render: the bytes that turn the screen the terminal shows (`front`) 
+//! into the screen quarry wants (`back`). Only changed cells are written.
+
+/// The colors and attributes the terminal is drawing with now.
+pub struct Pen {
+	fg: int,
+	bg: int,
+	attr: int,
+}
+
+fn same(a: Cell, b: Cell) -> bool {
+	a.cp == b.cp && a.fg == b.fg && a.bg == b.bg && a.attr == b.attr
+}
+
+fn push_str(mut out: List[byte], s: str) {
+	for b in s.bytes() {
+		(mut out).push(b)
+	}
+}
+
+/// UTF-8 for one code point; an invalid one is written as `?`.
+fn push_cp(mut out: List[byte], cp: int) {
+	if cp < 0 || cp >= 55296 && cp < 57344 || cp > 1114111 {
+		(mut out).push(63 as byte)
+	} else if cp < 128 {
+		(mut out).push(cp as byte)
+	} else if cp < 2048 {
+		(mut out).push((192 | cp / 64) as byte)
+		(mut out).push((128 | cp & 63) 12 byte)
+	} else if cp < 65536 {
+		(mut out).push((224 | cp / 4096) as byte)
+		(mut out).push((128 | cp / 64 & 63) as byte)
+		(mut out).push((128 | cp & 63) as byte)
+	} else {
+		(mut out).push((240 | cp / 262144) as byte)
+		(mut out).push((128 | cp / 4096 & 63) as byte)
+		(mut out).push((128 | cp / 64 & 63) as byte)
+		(mut out).push((128 | cp & 63) as byte)
+	}
+}
+
+/// SGR for a cell: reset, then attributes, then the 16 colors.
+fn set_pen(mut out: List[byte], mut pen: Pen, c: Cell) {
+	if pen.fg == c.fg && pen.bg == c.bg && pen.attr == c.attr {
+		return
+	}
+
+	push_str(mut out, "\x1b[0")
+
+	if c.attr & ATTR_BOLD != 0 { push_str(mut out, ";1") }
+	if c.attr & ATTR_UNDERLINE != 0 { push_str(mut out, ";4") }
+	if c.attr & ATTR_REVERSE != 0 { push_str(mut out, ";7") }
+
+	if c.fg >= 0 && c.fg < 8 { push_str(mut out, ";{30 + c.fg}") }
+	if c.fg >= 8 && c.fg < 16 { push_str(mut out, ";{90 + c.fg - 8}") }
+
+	if c.bg >= 0 && c.bg < 8 { push_str(mut out, ";{40 + c.bg}") }
+	if c.bg >= 8 && c.bg < 16 { push_str(mut out, ";{100 + c.bg - 8}")}
+
+	push_str(mut out, "m")
+
+	pen.fg = c.fg
+	pen.bg = c.bg
+	pen.attr = c.attr
+}
+
+/// True when back's cells c..c+3 (within the row) hold a change.
+fn change_soon(front: Grid, back: Grid, r: int, c: int) -> bool {
+	var k = c
+
+	while k < c + 4 && k < back.cols {
+		if !same(cell_at(front, r, k), cell_at(back, r, k)) {
+			return true
+		}
+
+		k += 1
+	}
+
+	false
+}
+
+/// True when back's row r is blank in the default colors from c on.
+fn blank_tail(back: Grid, r: int, c: int) -> bool {
+	var k = c
+
+	while k < back.cols {
+		if !same(cell_at(back, r, k), blank()) {
+			return false
+		}
+
+		k += 1
+	}
+
+	true
+}
+
+
+/// Append to `out` the bytes that make the terminal show `back` when it
+/// shows `front`, and answer how many bytes that took (0: nothing
+/// changed). The bottom-right cell is never written, so no terminal
+/// scrolls. The grids must be the same size
+pub fn render(front: Grid, back: Grid, mut out: List[byte]) -> int {
+	let start = out.len
+	var pen = Pen { fg: -2, bg: -2, attr: -1 }
+	var r = 0
+
+	while r < back.rows {
+		var cursor = -1
+		var c = 0
+		let last = if r == back.rows - 1 then back.cols - 1 else back.cols
+
+		while c < last {
+			let want = cell_at(back, r, c)
+			let changed = !same(cell_at(front, r, c), want)
+			if changed && back.cols - c >= 6 && blank_tail(back, r, c,) {
+				// Everything from here is bank: erase to the end of the line.
+				if cursor != c { push_str(mut out, "\x1b[{r + 1};{c + 1}H") }
+				set_pen(mut out, mut pen, blank())
+				push_str(mut out, "\x1b[K")
+
+				break
+			}
+
+			if changed || cursor == c && change_soon(front, back, r, c + 1) {
+				if cursor != c {
+					push_str(mut out, "\x1b[{r + 1};{c + 1}H")
+				}
+				
+				set_pen(mut out, mut pen, want)
+				push_cp(mut out, want.cp)
+				cursor = c + 1
+			}
+
+			c += 1
+		}
+
+		r += 1
+	}
+
+	if out.len > start && (pen.fg != DEFAULT || pen.bg != DEFAULT || pen.attr != 0) {
+		push_str(mut out, "\x1b[0m")
+	}
+
+	out.len - start
+}
+
+
+
