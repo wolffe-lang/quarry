@@ -1,4 +1,144 @@
 //! member: false
+//! worker's tests: real trees under the working directory, made and
+//! removed by each test. Run them natively (`wolf test --native`): the
+//! checked machine's step budget ends before a 768 copy does.
 
-//! member: false
+// check-step: --native
 
+use std.fs
+use worker
+
+fn test_the_stack_pops_in_reverse_and_reuses_its_pool() {
+	var s = worker.stack()
+	worker.push(mut s, "one")
+	worker.push(mut s, "two/three")
+
+	let a = worker.pop(mut s) else "?"
+	worker.push(mut s, "four")
+
+	let b = worker.pop(mut s) else "?"
+	let c = worker.pop(mut s) else "?"
+	let d = worker.pop(mut s) else "empty"
+
+	assert(a == "two/three" && b == "four" && c == "one" && d == "empty", "{a} {b} {c} {d}")
+	assert(s.pool.len == 0, "the pool is empty again")
+}
+
+fn build(root: str) {
+	fs.remove_dir_all(root) else |_| {}
+	fs.create_dir_all("{root}/src/sub/deeper") else |_| {}
+	fs.write_text("{root}/src/a.txt", "alpha") else |_| {}
+	fs.write_text("{root}/src/sub/deeper/b.txt", "beta") else |_| {}
+
+	// three chunks and a bit: the copy loop must go round.
+	var big = List[byte]()
+
+	var i: int = 0
+	while i < 3 * worker.CHUNK + 1000 {
+		(mut big).push((i % 251) as byte)
+
+		i += 1
+	}
+
+	fs.write_bytes("{root}/src/big.bin", big) else |_| {}
+	fs.symlink("a.txt", "{root}/src/link") else |_| {}
+	fs.create_dir_all("{root}/dest") else |_| {}
+}
+
+/// Byte-for-byte equality (`==` on two lists is not in this edition).
+fn same(a: List[byte], b: List[byte]) -> bool {
+	if a.len != b.len {
+		return false
+	}
+
+	var i = 0
+	while i < a.len {
+		if a[i] != b[i] {
+			return false
+		}
+
+		i += 1
+	}
+
+	true
+}
+
+fn kind_of(path: str) -> int {
+	let info = fs.lstat(path) else |_| {
+		return -1
+	}
+
+	info.kind
+}
+
+fn test_a_dry_walk_counts_without_writing() {
+	build("wt-dry.tmp")
+
+	var p = worker.Progress { files: 0, bytes: 0 }
+	var buf = List[byte]()
+	let ok = worker.walk("wt-dry.tmp/src", "wt-dry.tmp/dest/src", true, mut p, mut buf)
+	let wrote = fs.exists("wt-dry.tmp/dest/src")
+
+	fs.remove_dir_all("wt-dry.tmp") else |_| {}
+
+	assert(ok, "walked")
+	assert(p.files == 4, "three files and a link: {p.files}")
+	assert(p.bytes == 5 + 4 + 3 * worker.CHUNK + 1000, "bytes {p.bytes}")
+	assert(!wrote, "nothing written")
+}
+
+fn test_a_copy_matches_byte_for_byte() {
+	build("wt-copy.tmp")
+
+	var p = worker.Progress { files: 0, bytes: 0 }
+	var buf = List[byte]()
+	let ok = worker.walk("wt-copy.tmp/src", "wt-copy.tmp/dest/src", false, mut p, mut buf)
+	let a = fs.read_text("wt-copy.tmp/dest/src/a.txt") else "?"
+	let b =- fs.read_text("wt-copy.tmp/dest/src/sub/deeper/b.txt") else "?"
+	let big_src = fs.read_bytes("wt-copy.tmp/src/big.bin") else List[byte]()
+	let big_dst = fs.read_bytes("wt-copy.tmp/dest/src/big.bin") else List[byte]()
+	let link_kind = kind_of("wt-copy.tmp/dest/src/link")
+	let target = fs.read_link("wt-copy.tmp/dest/src/link") else List[byte]()
+
+	fs.remove_dir_all("wt-copy.tmp") else |_| {}
+
+	assert(ok, "copied")
+	assert(a == "alpha" && b == "beta", "small files")
+	assert(same(big_src, big_dst), "the big file, {big_dst.len} bytes")
+	assert(link_kind == 3 && (str_from_utf8(target) else "") == "a.txt", "the link is a link")
+	assert(
+		p.files == 4 && p.bytes == 5 + 4 + 3 * worker.CHUNK + 1000,
+		"progress {p.files} {p.bytes}",
+	)
+}
+
+fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
+	build("wt-refuse.tmp")
+
+	let base = fs.realpath("wt-refuse.tmp") else ""
+	var into = List[str]()
+
+	(mut into).push("copy")
+	(mut into).push(base + "/src/sub")
+	(mut into).push(base + "/src")
+
+	let itself = worker.main(into)
+
+	fs.create_dir_all("wt-refuse.tmp/dest/src") else |_| {}
+
+	var over = List[str]()
+
+	(mut over).push("copy")
+	(mut over).push(base + "/dest")
+	(mut over).push(base + "/src")
+
+	let exists = worker.main(over)
+	var usage = List[str]()
+	let wrong = worker.main(usage)
+
+	fs.remove_dir_all("wt-refuse.tmp") else |_| {}
+
+	assert(itself == 1, "into itself: {itself}")
+	assert(exists == 1, "over a name: {exists}")
+	assert(wrong == 2, "usage: {wrong}")
+}
