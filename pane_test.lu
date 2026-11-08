@@ -67,6 +67,12 @@ fn test_reload_keeps_the_cursor_on_its_name() {
 	var p = pane.new("pt-keep.tmp")
 
 	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	p.cursor = 2
+	fs.write_text("pt-keep.tmp/aardvark", "a") else |_| {}
+	pane.load(mut p) else |_| {
 		assert(false, "reload failed")
 	}
 
@@ -89,7 +95,7 @@ fn test_enter_and_up() {
 	let inside = names(p)
 	let path_in = pane.path_of(p)
 
-	pane.up(mut p) ese |_| {
+	pane.up(mut p) else |_| {
 		assert(false, "up failed")
 	}
 
@@ -124,7 +130,7 @@ fn test_a_missing_directory_keeps_the_old_listing() {
 	}
 
 	assert(tag == "not_found", "tag {tag}")
-	assert(names(p) == beforem "the old listing stays")
+	assert(names(p) == before, "the old listing stays")
 }
 
 fn test_settle_keeps_the_window_around_the_cursor() {
