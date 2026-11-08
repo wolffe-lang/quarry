@@ -1,19 +1,22 @@
 //! member: false
-//! quarry, step 4: the loop that never lags. One wait over the keyboard,
-//! signals and the ESC deadline; ALL waiting input is drained and applied
-//! before ONE frame is drawn; drawing, rendering and reading happen in a
-//! region that dies at the end of each turn
+//! quarry, step 5: two panes on real directories. The model is two
+//! `pane.Pane`s and which one is active; `ui.draw` turns it into
+//! a frame; keys move the cursor, switch panes and walk the tree
 
 use grid
 use keys
+use pane
 use std.env
 use std.fs
 use std.signal
 use std.time
 use tty
+use ui
 
 /// The longest input quarry drains in one turn before it draws.
 const DRAIN_MAX: int = 262144
+
+const KEYBAR: str = " Tab Pane  Enter Open  Bksp Up  . Hidden  q Quit"
 
 /// Everything the program knows
 struct App {
@@ -25,10 +28,10 @@ struct App {
 	dec: keys.Decoder,
 	running: bool,
 	dirty: bool,
-	bar: int,
-	last_bytes: int,
-	last_frame_us: int,
-	keys_last_turn: int,
+	panes: List[pane.Pane],
+	active: int,
+	home: str,
+	status: List[byte]
 }
 
 
@@ -45,48 +48,29 @@ fn now_ms() -> int {
 	time.monotonic_ns() / 1000000
 }
 
-/// Draw the whole screen into the back grid. Pure: no I/O.
-fn draw(mut g: grid.Grid, look: grid.Look, bar: int, bytes: int, us: int, keys_seen: int) {
-	grid.clear(mut g)
-	let half = g.cols / 2
-	let h = g.rows - 1
-
-	grid.frame(mut g, 0, 0, h, half, look.gl, grid.DEFAULT)
-	grid.frame(mut g, 0, half, h, g.cols - half, look.gl, grid.DEFAULT)
-
-	var row = 1
-	while row < h -1 {
-		let attr = if row - 1 == bar then grid.ATTR_REVERSE else 0
-
-
-		grid.fill(mut g, row, 1, half - 2, 32, grid.DEFAULT, grid.DEFAULT, attr)
-		let _ = grid.puts(
-			mut g,
-			row,
-			2,
-			half - 4,
-			"entry {row - 1}",
-			grid.DEFAULT,
-			grid.DEFAULT,
-			attr,
-		)
-
-		row += 1
+/// Put `text` on the status line until the next key.
+fn say(mut a: App, text: str) {
+	(mut a.status).reset()
+	for b in text.bytes() {
+		(mut a.status).push(b)
 	}
-
-	let status = " frame {bytes} B in {us} us, {keys_seen} keys last turn   q quits"
-	let _ = grid.puts(mut g, g.rows - 1, 0, g.cols - 1, status, grid.DEFAULT, grid.DEFAULT, 0)
 }
 
-/// Draw, diff, write once. The strings built while drawing and the
-/// escape sequences built while rendering die with the region.
+/// Draw, diff, write once. The strings built while drawing and the 
+/// escape sequences buillt while rendering die with the region
 fn paint(mut a: App) {
-	let t0 = time.monotonic_ns()
 	(mut a.out).reset()
 
 	region scratch {
-		draw(mut a.back, a.look, a.bar, a.last_bytes, a.last_frame_us, a.keys_last_turn)
-		a.last_bytes = grid.render(a.front, a.back, mut a.out)
+		let rows = ui.list_rows(a.t.rows)
+
+		pane.settle(mut a.panes[0], rows)
+		pane.settle(mut a.panes[1], rows)
+
+		let status = str_from_utf8(a.status) else ""
+
+		ui.draw(mut a.back, a.look, a.panes[0], a.panes[1], a.active, a.home, status, KEYBAR)
+		let _ = grid.render(a.front, a.back, mut a.out)	
 	}
 
 	tty.write(a.out) else |_| {
@@ -94,7 +78,6 @@ fn paint(mut a: App) {
 	}
 
 	grid.assign(mut a.front, a.back)
-	a.last_frame_us = (time.monotonic_ns() - t0) / 1000
 	a.dirty = false
 }
 
@@ -160,19 +143,64 @@ fn drain(mut a: App, files: List[fs.File]) -> int {
 	}
 }
 
+/// Enter the directory under the cursor.
+fn open(mut a: App) {
+	let went = pane.enter(mut a.panes[a.active]) else |e| {
+		say(mut a, "cannot open that directory: {e}")
+		return
+	}
+
+	if !went {
+		say(mut a, "not a directory")
+	}
+}
+
+/// Go to the parent directory
+fn go_up(mut a: App) {
+	pane.up(mut a.panes[a.active]) else |e| {
+		say(mut a, "cannot open the parent: {e}")
+	}
+}
+
+/// Show or hide dot files in the active pane.
+fn toggle_hidden(mut a: App) {
+	a.panes[a.active].show_hidden = !a.panes[a.active].show_hidden
+	pane.load(mut a.panes[a.active]) else |e| {
+		say(mut a, "cannot reload: {e}")
+	}
+}
+
 /// One key changes the model, never the screen
 fn on_key(mut a: App, k: keys.Key) {
-	if k.code == 113 && k.mods == 0 {
+	(mut a.status).reset()
+	let page = ui.list_rows(a.t.rows) - 1
+	let c = k.code
+	let plain = k.mods == 0
+
+	if c == 113 && plain || c == keys.K_F0 + 10 {
 		a.running = false
-	} else if k.code == keys.K_DOWN && a.bar < a.t.rows - 4 {
-		a.bar += 1
-	} else if k.code == keys.K_UP && a.bar > 0 {
-		a.bar -= 1
-	} else if k.code == keys.K_HOME {
-		a.bar = 0
-	} else if k.code == keys.K_END {
-		a.bar = a.t.rows - 4
+	} else if c == keys.K_DOWN {
+		pane.move_by(mut a.panes[a.active], 1)
+	} else if c == keys.K_UP {
+		pane.move_by(mut a.panes[a.active], -1)
+	} else if c == keys.K_PGDN {
+		pane.move_by(mut a.panes[a.active], page)
+	} else if c == keys.K_PGUP {
+		pane.move_by(mut a.panes[a.active], 0 - page)
+	} else if c == keys.K_HOME {
+		a.panes[a.active].cursor = 0
+	} else if c == keys.K_END {
+		a.panes[a.active].cursor = a.panes[a.active].entries.len - 1
+	} else if c == keys.K_TAB {
+		a.active = 1 - a.active
+	} else if c == keys.K_ENTER || c == keys.K_RIGHT {
+		open(mut a)
+	} else if c == keys.K_BACKSPACE || c == keys.K_LEFT {
+		go_up(mut a)
+	} else if c == 46 && plain {
+		toggle_hidden(mut a)
 	}
+
 	a.dirty = true
 }
 
@@ -204,24 +232,42 @@ fn run(mut a: App) {
 			break
 		}
 
-		var n = 0
-		while keys.next(mut a.dec, now_ms(), mut k) {
-			on_key(mut a, k)
-
-			n += 1
-		}
-
-		if n > 0 {
-			a.keys_last_turn = n
+		while a.running &&  keys.next(mut a.dec, now_ms(), mut k) {
+			region scratch {
+				on_key(mut a, k)
+			}
 		}
 	}
 }
 
-
-
-
+/// The absolute path quarry starts a pane on: the argument, or the working
+/// directory.
+fn start_path(arg: str) -> str ! {not_found} {
+	let p = if arg == "" then "." else arg
+	fs.realpath(p) else |_| {
+		return not_found
+	}
+}
 
 fn main() -> !int {
+	let left_arg = env_args().get(0) else ""
+	let right_arg = env_args().get(1) else left_arg
+	var panes = List[pane.Pane]()
+
+	for arg in [left_arg, right_arg] {
+		let path = start_path(arg) else |_| {
+			eprint("quarry: no such directory: {arg}")
+			return 1
+		}
+
+		var p = pane.new(path)
+		pane.load(mut p) else |e| {
+			eprint("quarry: cannot list {path}: {e}")
+			return 1
+		}
+		(mut panes).push(p)
+	}
+
 	var t = tty.open() else |e| {
 		eprint("quarry: standard input and output must be a terminal ({e})")
 		return 1
@@ -245,10 +291,10 @@ fn main() -> !int {
 		dec: keys.new(),
 		running: true, 
 		dirty: true,
-		bar: 0,
-		last_bytes: 0,
-		last_frame_us: 0,
-		keys_last_turn: 0,
+		panes: panes,
+		active: 0, 
+		home: env.get("HOME") else "",
+		status: List[byte](),
 	}
 
 	run(mut a)
