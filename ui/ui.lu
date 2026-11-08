@@ -2,6 +2,7 @@
 //! terminal or the file system, and quarry calls it inside the frame's
 //! scratch region, so every string built here dies with the frame.
 
+use dialog
 use grid
 use pane
 use std.time
@@ -291,89 +292,98 @@ pub fn draw(
 	let _ = grid.puts(mut g, bar, 0, g.cols, keybar, col(look, BLACK), col(look, CYAN), bar_attr)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/// Draw the open dialog over the panes: a framed box in the middle, the
+/// question or title, and for an input line the text with its cursor
+pub fn draw_dialog(mut g: grid.Grid, look: grid.Look, d: dialog.Dialog) {
+	let title = dialog.title_of(d)
+	var w = cells(title)  + 6
+
+	if w < 44 {
+		w = 44
+	}
+
+	if w > g.cols - 2 {
+		w = g.cols - 2
+	}
+
+	let h = if d.kind == dialog.INPUT then 5 else 4
+	let top = (g.rows - h) / 2
+	let left = (g.cols - w) / 2
+	var r = top
+
+	while r < top + h {
+		grid.fill(mut g, r, left, w, 32, grid.DEFAULT, grid.DEFAULT, 0)
+
+		r += 1
+	}
+
+	let edge = col(look, YELLOW + 8)
+	grid.frame(mut g, top, left, h, w, look.gl, edge)
+	let room = w - 4
+
+	let _ = grid.puts(
+		mut g,
+		top + 1,
+		left + 2,
+		room, 
+		fit(title, room),
+		grid.DEFAULT,
+		grid.DEFAULT,
+		grid.ATTR_BOLD
+	)
+
+	if d.kind == dialog.INPUT {
+		// Scroll the text so the cursor is always inside the box.
+		let first = if d.at >= room then d.at - room + 1 else 0
+		let shown = dialog.slice(d, first, first + room)
+
+		grid.fill(
+			mut g,
+			top + 2,
+			left + 2,
+			room, 
+			32,
+			grid.DEFAULT,
+			grid.DEFAULT,
+			grid.ATTR_UNDERLINE,
+		)
+
+		let _ = grid.puts(
+			mut g,
+			top + 2,
+			left + 2,
+			room, 
+			shown, 
+			grid.DEFAULT, 
+			grid.DEFAULT,
+			grid.ATTR_UNDERLINE,
+		)
+
+		let at = left + 2 + d.at - first
+		let under = grid.cell_at(g, top + 2, at)
+
+		grid.put(mut g, top + 2, at, under.cp, grid.DEFAULT, grid.DEFAULT, grid.ATTR_REVERSE)
+
+		let _ = grid.puts(
+			mut g, 
+			top + 3,
+			left + 2,
+			room,
+			"Enter OK   Esc cancel",
+			grid.DEFAULT,
+			grid.DEFAULT,
+			0
+		)
+	} else {
+		let _ = grid.puts(
+			mut g,
+			top + 2,
+			left + 2,
+			room, 
+			"y yes   any other key no",
+			grid.DEFAULT,
+			grid.DEFAULT,
+			0,
+		)
+	}
+}
