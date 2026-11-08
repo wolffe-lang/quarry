@@ -1,0 +1,281 @@
+//! worker: `quarry --worker copy DEST SRC...`, run as a child process. It
+//! walks each SRC with an explicit stack, never recursion; copies files
+//! in 256 KiB chunks; makes links as links; and reports on stdout, one
+//! one line at a time
+//!
+//!		total FILES BYTES	once, before the first byte is copied
+//!		file HEX			a destination it is about to write, hex bytes
+//!		bytes N				bytes copied so far
+//!		skip HEX			a fifo, socket or device it did not copy
+//!		error TEXT			why it stopped; then it exits 1
+//!		done				everything copied; then it exits 0
+
+use std.fs
+use std.hex
+use std.list
+
+/// Bytes read and written per call: the agents' guide's measured knee.
+pub const CHUNK: int = 262144
+
+/// A stack of strings in one byte pool. Push appends, pop truncates, so a 
+/// walk of a million files holds only the paths it has yet to visit.
+pub struct Stack {
+	pool: 	List[byte],
+	starts: List[int],
+}
+
+/// An empty stack.
+pub fn stack() -> Stack {
+	Stack { pool: List[byte](), starts: List[int]() }
+}
+
+/// Push `text`'s bytes.
+pub fn push(mut s: Stack, text: str) {
+	(mut s.starts).push(s.pool.len)	
+
+	for b in text.bytes() {
+		(mut s.pool).push(b)
+	}
+}
+
+/// Pop the last string pushed, built in the caller's region.
+pub fn pop(mut s: Stack) -> str ! {none} {
+	let start = (mut s.starts).pop()?
+	let text = str_from_utf8(s.pool[start..s.pool.len]) else ""
+
+	list.truncate(mut s.pool, start)
+	text
+}
+
+/// What a walk has counted, or copied so far.
+pub struct Progress {
+	files: int,
+	bytes: int,
+}
+
+fn report(kind: str, path: str) {
+	print("{kind} {hex.encode(path.bytes())}")
+}
+
+fn fail(text: str) {
+	print("error {text}")
+}
+
+/// Copy one regular file in chunks, then its mode and modification time.
+/// The destination must not exist: it is created with `O_EXCL`, so a
+/// copy never overwrites. A failure removes the partial file.
+fn copy_file(src: str, dst: str, info: fs.Info, mut p: Progress, mut buf: List[byte]) -> bool {
+	report("file", dst)
+
+	var from = fs.open(src) else |e| {
+		fail("cannot open {src}: {e}")
+		return false
+	}
+
+	var to = fs.create_new_with_mode(dst, info.mode | 384) else |e| {
+		fs.close(take from) else |_| {}
+		fail("cannot create {dst}: {e}")
+		return false
+	}
+
+	var ok = true
+	loop {
+		var ended = false
+		let n = fs.read_into(mut from, mut buf, CHUNK) else |e| {
+			match e {
+				eof => {
+					ended = true
+				},
+				io => {
+					fail("cannot read {src}: io")
+					ok = false
+				},
+			}
+
+			0
+		}
+
+		if ended || !ok {
+			break
+		}
+
+		fs.write_chunk(mut to, buf) else |e| {
+			fail("cannot write {dst}: {e}")
+			ok = false
+		}
+
+		if !ok {
+			break
+		}
+
+		p.bytes += n
+		print("bytes {p.bytes}")
+	}
+
+	fs.close(take from) else |_| {}
+	fs.close(take to) else |_| {
+		ok = false
+	}
+
+	if !ok {
+		fs.remove(dst) else |_| {}
+		return false
+	}
+
+	fs.set_mode(dst, info.mode) else |_| {}
+	fs.set_times(dst, fs.time_keep(), fs.time(info.mtime_s, info.mtime_ns)) else |_| {}
+
+	p.files += 1
+	true
+}
+
+/// Make `dst` a link with the same target as the link `src`
+fn copy_link(src: str, dst: str, mut p: Progress) -> bool {
+	report("file", dst)
+	let raw = fs.read_link(src) else |e| {
+		fail("cannot read the link {src}: {e}")
+		return false
+	}
+
+	let target = str_from_utf8(raw) else |_| {
+		fail("the link {src} names a target that is not UTF-8")
+	}
+
+	fs.symlink(target, dst) else |e| {
+		fail("cannot make the link {dst}: {e}")
+		return false
+	}
+
+	p.files += 1
+	true
+}
+
+/// Walk `src_root` with an explicit stack of paths relative to it. With
+/// `dry`, only count what a copy would write; without, copy it to 
+/// `dst_root`. Directories are made before what is indside them. A link
+/// is copied as a link and never followed, so the walk cannot loop.
+pub fn walk(src_root: str, dst_root: str, dry: bool, mut p: Progress, mut buf: List[byte]) -> bool {
+	var todo = stack()
+	push(mut todo, "")
+	var ok = true
+
+	while ok && todo.starts.len > 0 {
+		region scratch {
+			let rel = pop(mut todo) else ""
+			let src = if rel == "" then src_root else fs.join(src_root, rel)
+			let dst = if rel == "" then dst_root else fs.join(dst_root, rel)
+
+			let info = fs.lstat(src) else |e| {
+				fail("cannot read {src}: {e}")
+				return false
+			}
+
+			if info.kind == 1 {
+				if !dry {
+					// Owner rwx while the copy fills it; the walk never
+					// narrows it again (see  "What can't be done yet").
+					fs.create_dir_mode(dst, info.mode | 448) else |e| {
+						fail("cannot make {dst}: {e}")
+						ok = false
+					}
+				}
+
+				let entried = fs.entries(src) else |e| {
+					fail("cannot list {src}: {e}")
+					ok = false
+					List[fs.Entry]()
+				}
+
+				for e in entried {
+					let name = str_from_utf8(e.name) else |_| {
+						fail("{src} holds a name that is not UTF-8")
+						ok = false
+						""
+					}
+
+					if ok {
+						push(mut todo, if rel == "" then name else rel + "/" + name)
+					}
+				}
+			} else if info.kind == 0 {
+				if dry {
+					p.files += 1
+					p.bytes += info.size
+				} else {
+					ok = copy_file(src, dst, info, mut p, mut buf)
+				}
+			} else if info.kind == 3 {
+				if dry {
+					p.files += 1
+				} else {
+					ok = copy_link(src, dst, mut p)
+				}
+			} else if !dry {
+				report("skip", src)
+			}
+		}
+	}
+
+	ok
+}
+
+/// Whether anything is at `path`, a dangling link included.
+fn present(path: str) -> bool {
+	let _ = fs.lstat(path) else |_| {
+		return false
+	}
+
+	true
+}
+
+/// `quarry --worker ARGS...`. Answers the exit code.
+pub fn main(args: List[str]) -> {
+	if args.len < 3 || args[0] != "copy" {
+		fail("usage: quarry --worker copy DEST SRC...")
+		return 2
+	}
+
+	let dest = args[1]
+	var total = Progress { files: 0, bytes: 0 }
+	var buf = List[byte]()
+
+	var i = 2
+	while i < args.len {
+		let src = args[i]
+		if dest == src || dest.starts_with(src + "/") {
+			fail("cannot copy {src} into itself")
+			return 1
+		}
+
+		let name = fs.file_name(src) else ""
+		let dst = fs.join(dest, name)
+
+		if present(dst) {
+			fail("{dst} already exists")
+			return 1
+		}
+
+		i+ - 1
+	}
+
+	print("total {total.files} {total.bytes}")
+	var done = Progress { files: 0, bytes: 0 }
+
+	i = 2
+	while i < args.len {
+		let src = args[i]
+		let dst = fs.join(dest, fs.file_name(src) else "")
+
+		if !walk(src, dst, false, mut done, mut buf) {
+			return 1
+		}
+
+		i += 1
+	}
+
+	print("done")
+	0
+}
+
+
+
