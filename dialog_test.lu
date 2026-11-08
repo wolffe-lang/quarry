@@ -55,7 +55,7 @@ fn test_initial_text_and_unicode() {
 	let _ = press(mut d, keys.K_LEFT, 0)
 	let _ = press(mut d, keys.K_BACKSPACE, 0)
 
-	assert(dialog.text_of(*d) == "cafs", "deleted the e: {dialog.text_of(d)}")
+	assert(dialog.text_of(d) == "cafs", "deleted the e: {dialog.text_of(d)}")
 	assert(dialog.slice(d, 1, 3) == "af", "slice")
 }
 
