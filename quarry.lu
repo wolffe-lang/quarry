@@ -3,6 +3,7 @@
 //! `pane.Pane`s and which one is active; `ui.draw` turns it into
 //! a frame; keys move the cursor, switch panes and walk the tree
 
+use dialog
 use grid
 use keys
 use pane
@@ -20,7 +21,16 @@ const DRAIN_MAX: int = 262144
 const POLL_MS: int = 1000
 
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " Tab Pane  Enter Open  Bksp Up  . Hidden  ^R Reload  q Quit"
+const KEYBAR: str = " F6 Rename  F7 Mkdir  F8 Delete  Space Mark  ^R Reload  q Quit"
+
+/// What a dialog's yes does: rename the entry under the cursor.
+const ACT_MKDIR: int = 1
+
+/// What a dialog's yes does: rename the entry under the cursor.
+const ACT_RENAME: int = 2
+
+/// What a dialog's yes does: delete the targets.
+const ACT_DELETE: int = 3
 
 /// Everything the program knows
 struct App {
@@ -37,6 +47,7 @@ struct App {
 	home: str,
 	status: List[byte],
 	next_poll_ms: int,
+	dlg: dialog.Dialog,
 }
 
 
@@ -75,6 +86,11 @@ fn paint(mut a: App) {
 		let status = str_from_utf8(a.status) else ""
 
 		ui.draw(mut a.back, a.look, a.panes[0], a.panes[1], a.active, a.home, status, KEYBAR)
+
+		if a.dlg.kind != dialog.NONE {
+			ui.draw(dialog(mut a.back, a.look, a.dlg))
+		}
+		
 		let _ = grid.render(a.front, a.back, mut a.out)	
 	}
 
@@ -228,8 +244,175 @@ fn toggle_hidden(mut a: App) {
 	}
 }
 
+/// Whether `name` can be a single file name: not empty, not `.` or
+/// `..`, and no `/`.
+fn valid_name(name: str) -> bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+
+	for b in name.bytes() {
+		if b as int == 47 || b as int == 0 {
+			return false
+		}
+	}
+
+	true
+}
+
+/// Whether anything is at `path`, a dangling link included.
+fn present(path: str) -> bool {
+	let _ = fs.lstat(path) else |_| {
+		return false	
+	}
+
+	true
+}
+
+fn make_dir(mut a: App, name: str) {
+	if !valid_name(name) {
+		say(mut a, "not a file name: {name}")
+		return
+	}
+
+	let path = fs.join(pane.path_of(a.panes[a.active]), name)
+
+	fs.create_dir(path) else |e| {
+		say(mut a, "cannot make {name}: {e}")
+		return
+	}
+
+	reload(mut a, a.active)
+	let _ = pane.cursor_to(mut a.panes[a.active], name)
+}
+
+fn rename(mut a: App, name: str) {
+	let p = a.active
+	let from = pane.child_path(a.panes[p], a.panes[p].cursor) else |_| {
+		say(mut a, "quarry cannot reach a name that is not UTF-8")
+		return
+	}
+
+	if !valid_name(name) {
+		say(mut a, "not a file name: {name}")
+		return
+	}
+
+	let to = fs.join(pane.path_of(a.panes[p]), name)
+
+	if to == from {
+		return
+	}
+
+	// move_file replaces what is there, quarry never does that silently
+	if present(to) {
+		say(mut a, "cannot rename: {e}")
+		return
+	}
+
+	reload(mut a, p)
+	let _ = pane.cursor_to(mut a.panes[p], name)
+}
+
+fn delete(mut a: App) {
+	let p = a.active
+	let t = pane.targets(a.panes[p])
+	var gone = 0
+	var failed = 0
+
+	for i in t {
+		let path = pane.child_path(a.panes[p], i) else ""
+		if path == "" {
+			failed += 1
+			continue
+		}
+
+		let info = fs.lstat(path) else |_| {
+			failed += 1
+			continue
+		}
+
+		// lstat: a link to a directory is removed as a link, never followed.
+		if info.kind == pane.KIND_DIR {
+			fs.remove_dir_all(path) else |_| {
+				failed += 1
+				continue
+			}
+		}
+
+		gone += 1
+	}
+
+	reload(mut a, 0)
+	reload(mut a, 1)
+
+	if failed > 0 {
+		say(mut a, "deleted {gone}; {failed} could not be deleted")
+	} else {
+		say(mut a, "deleted {gone}")
+	}
+}
+
+/// The dialog was accepted: do what it was opened for.
+fn act(mut a: App) {
+	let action = a.dlg.action
+	let text = dialog.text_of(a.dlg)
+	dialog.close(mut a.dlg)
+
+	if action == ACT_MKDIR {
+		make_dir(mut a, text)
+	} else if action == ACT_RENAME {
+		rename(mut a, text)
+	} else if action == ACT_DELETE {
+		delete(mut a)
+	}
+}
+
+/// The question F8 asks about pane `p`'s targets.
+fn delete_question(p: pane.Pane) -> str {
+	let t = pane.targets(p)
+
+	if t.len == 1 {
+		return "Delete {pane.display_name(p, t[0])}? (y/N)"
+	}
+	"Delete {t.len} marked items? (y/N)"
+}
+
+/// F8: ask first. The default answer is no.
+fn ask_delete(mut a: App) {
+	if pane.targets(a.panes[a.active]).len == 0 {
+		return
+	}
+
+	dialog.ask(mut a.dlg, ACT_DELETE, delete_question(a.panes[a.active]))
+}
+
+/// F6: edit the name in place.
+fn ask_rename(mut a: App) {
+	let i = a.active
+	if a.panes[i].cursor >= a.panes[i].entries.len {
+		return
+	}
+
+	let name = pane.display_name(a.panes[i], a.panes[i].cursor)
+	dialog.edit(mut a.dlg, ACT_RENAME, "Rename {name} to:", name)
+}
+
 /// One key changes the model, never the screen
 fn on_key(mut a: App, k: keys.Key) {
+	a.dirty = true
+
+	if a.dlg.kind != dialog.NONE {
+		let r = dialog.key(mut a.dlg, k)
+		if r == dialog.ACCEPT {
+			act(mut a)
+		} else if r == dialog.CANCEL {
+			dialog.close(mut a.dlg)
+		}
+		
+		return
+	}
+
 	(mut a.status).reset()
 	let page = ui.list_rows(a.t.rows) - 1
 	let c = k.code
@@ -260,6 +443,15 @@ fn on_key(mut a: App, k: keys.Key) {
 	} else if c == 114 && k.mods == keys.MOD_CTRL {
 		reload(mut a, 0)
 		reload(mut a, 1)
+	} else if c == keys.K_F0 + 7 {
+		dialog.edit(mut a.dlg, ACT_MKDIR, "Make directory:", "")
+	} else if c == keys.K_F0 + 6 {
+		ask_rename(mut a)
+	} else if c == keys.K_F0 + 8 || c == keys.K_DEL {
+		ask_delete(mut a)
+	} else if c == 32 && plain || c == keys.K_INS {
+		pane.toggle_mark(mut a.panes[a.active])
+		pane.move_by(mut a.panes[a.active], 1)
 	}
 
 	a.dirty = true
@@ -299,6 +491,13 @@ fn run(mut a: App) {
 
 		if meaning & !(signal.resize() | signal.suspend()) != 0 {
 			break
+		}
+
+		// Ctrl-C closes an open dialog instead of quitting.
+		if meaning & signal.interrupt() != 0 && a.dlg.kind != dialog.NONE {
+			dialog.close(mut a.dlg)
+			meaning = meaning & !signal.interrupt()
+			a.dirty = true
 		}
 
 		poll_disk(mut a)
@@ -366,6 +565,7 @@ fn main() -> !int {
 		home: env.get("HOME") else "",
 		status: List[byte](),
 		next_poll_ms: now_ms() + POLL_MS,
+		dlg: dialog.closed(),
 	}
 
 	run(mut a)
