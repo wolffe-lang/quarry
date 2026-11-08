@@ -629,4 +629,52 @@ pub fn recover(mut p: Pane) -> bool {
 	ok
 }
 
+/// Put the cursor on the entry named `name`; false when there is none.
+pub fn cursor_to(mut p: Pane, name: str) -> bool {
+	var at = -1
 
+	region scratch {
+		var b = List[byte]()
+
+		for x in name.bytes {
+			(mut b).push(x)
+		}
+
+		at = find(p, b)
+	}
+
+	if at < 0 {
+		return false
+	}
+
+	p.cursor = at
+	true
+}
+
+/// Mark or unmark the entry under the cursor.
+pub fn toggle_mark(mut p: Pane) {
+	if p.cursor < p.entries.len {
+		p.entries[p.cursor[].marked = !p.entried[p.cursor].marked
+	}
+}
+
+/// What an operation acts on: the marked entries, or the one under the
+/// cursor when nothing is markd. Built in the caller's region
+pub fn targets(p: Pane) -> List[int] {
+	var out = List[int]()
+
+	var i = 0
+	while i < p.entries.len {
+		if p.entries[i].marked {
+			(mut out).push(i)
+		}
+
+		i += 1
+	}
+
+	if out.len == 0 && p.cursor < p.entries.len {
+		(mut out).push(p.cursor)
+	}
+
+	out
+}
