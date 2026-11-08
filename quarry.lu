@@ -3,6 +3,7 @@
 //! `pane.Pane`s and which one is active; `ui.draw` turns it into
 //! a frame; keys move the cursor, switch panes and walk the tree
 
+use job
 use dialog
 use grid
 use keys
@@ -21,7 +22,7 @@ const DRAIN_MAX: int = 262144
 const POLL_MS: int = 1000
 
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " F6 Rename  F7 Mkdir  F8 Delete  Space Mark  Tab Pane  ^R Reload  q Quit"
+const KEYBAR: str = " F5 Copy  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  Tab Pane  ^R Reload  q Quit"
 
 /// What a dialog's yes does: rename the entry under the cursor.
 const ACT_MKDIR: int = 1
@@ -48,6 +49,7 @@ struct App {
 	status: List[byte],
 	next_poll_ms: int,
 	dlg: dialog.Dialog,
+	copying: job.Job,
 }
 
 
@@ -86,6 +88,10 @@ fn paint(mut a: App) {
 		let status = str_from_utf8(a.status) else ""
 
 		ui.draw(mut a.back, a.look, a.panes[0], a.panes[1], a.active, a.home, status, KEYBAR)
+
+		if a.copying.running {
+			ui.draw_progress(mut a.back, a.look, a.copying)
+		}
 
 		if a.dlg.kind != dialog.NONE {
 			ui.draw_dialog(mut a.back, a.look, a.dlg)
@@ -377,6 +383,94 @@ fn act(mut a: App) {
 	}
 }
 
+/// F5: copy the targets into the other pane's directory, in the
+/// background.
+fn start_copy(mut a: App) {
+	if a.copying.running {
+		say(mut a, "a copy is already running")
+		return
+	}
+
+	let src = a.active
+	let dest = pane.path_of(a.panes[1 - src])
+
+	if dest == pane.path_of(a.panes[src]) {
+		say(mut a, "both panes show this directory; point the other one elsewhere")
+		return 
+	}
+
+	var sources = List[str]()
+
+	for i in pane.targets(a.panes[src]) {
+		let path = pane.child_path(a.panes[src], i) else |_| {
+			say(mut a, "quarry cannot reach a name that is not UTF-8")
+			return
+		}
+
+		(mut sources).push(path)		
+	}
+
+	if sources.len == 0 {
+		return 
+	}
+
+	let exe = os_exe() else |_| {
+		say(mut a, "cannot find quarry's own program to start the copy")
+		return
+	}
+
+	job.start(mut a.copying, exe, dest, sources) else |e| {
+		say(mut a, "cannot start the copy: {e}")
+		return
+	}
+
+	pane.clear_marks(mut a.panes[src])
+}
+
+/// The worker ended: say how, remove what a cancel left behind, reload.
+fn finish_copy(mut a: App) {
+	let removed = job.clean_up(mut a.copying)
+
+	if a.copying.cancelled {
+		if removed != "" {
+			say(mut a, "copy cancelled; removed the partial {removed}")
+		} else {
+			say(mut a, "copy cancelled")
+		}
+	} else if a.copying.status != 0 {
+		let why = str_from_utf8(a.copying.failure) else ""
+		say(mut a, "copy failed: {why}")
+	} else {
+		say(mut a, "copied {a.copying.files} items, {pane.human_size(a.copying.bytes)}")
+	}
+
+	reload(mut a, 0)
+	reload(mut a, 1)
+	a.dirty = true
+}
+
+/// Read the worker's pipe when it has something. `pipe` holds only the
+/// pipe, so a key flood on stdin cannot hide it. Answers any meaning the
+/// look took off the queue.
+fn service_copy(mut a: App, pipe: List[fs.File]) -> int {
+	let w = tty.wait(pipe, 0) else |_| {
+		return 0
+	}
+
+	if w.ready == 0 {
+		if job.pump(mut a.copying) {
+			region scratch {
+				finish_copy(mut a)
+			}
+		}
+
+		a.dirty = true
+	}
+
+	w.meaning
+}
+
+
 /// The question F8 asks about pane `p`'s targets.
 fn delete_question(p: pane.Pane) -> str {
 	let t = pane.targets(p)
@@ -458,7 +552,14 @@ fn on_key(mut a: App, k: keys.Key) {
 		ask_rename(mut a)
 	} else if c == keys.K_F0 + 8 || c == keys.K_DEL {
 		ask_delete(mut a)
-	} else if c == 32 && plain || c == keys.K_INS {
+	} else if c == keys.K_F0 + 5 {
+		start_copy(mut a)
+	} else if c == keys.K_ESC && a.copying.running {
+		job.cancel(mut a.copying)
+		say(mut a, "cancelling the copy")
+	}
+
+	 else if c == 32 && plain || c == keys.K_INS {
 		pane.toggle_mark(mut a.panes[a.active])
 		pane.move_by(mut a.panes[a.active], 1)
 	}
@@ -468,12 +569,22 @@ fn on_key(mut a: App, k: keys.Key) {
 
 fn run(mut a: App) {
 	var files = List[fs.File]()
-	(mut files).push(fs.stdin())
+	var pipe = List[fs.File]()
 	var k = keys.Key { code: 0, mods: 0 }
 
 	while a.running {
 		if a.dirty {
 			paint(mut a)
+		}
+
+		// The keyboard is file 0; a running copy's pipe is file 1.
+		(mut files).reset()
+		(mut pipe).reset()
+		(mut files).push(fs.stdin())
+
+		if a.copying.running {
+			(mut files).push(a.copying.out)
+			(mut pipe).push(a.copying.out)
 		}
 
 		let w = tty.wait(files, wait_ms(a)) else |_| {
@@ -484,6 +595,10 @@ fn run(mut a: App) {
 
 		if w.ready == 0 {
 			meaning = meaning | drain(mut a, files)
+		}
+
+		if a.copying.running {
+			meaning = meaning | service_copy(mut a, pipe)
 		}
 
 		if meaning & signal.suspend() != 0 {
@@ -516,6 +631,13 @@ fn run(mut a: App) {
 			}
 		}
 	}
+
+	// Quitting with a copy running: stop it and tidy up after it.
+	if a.copying.running {
+		job.cancel(mut a.copying)
+		while !job.pump(mut a.copying) {}
+		let _ = job.clean_up(mut a.copying)
+	}
 }
 
 /// The absolute path quarry starts a pane on: the argument, or the working
@@ -528,6 +650,11 @@ fn start_path(arg: str) -> str ! {not_found} {
 }
 
 fn main() -> !int {
+	let args = env_args()
+	if (args.get(0) else "") == "--worker" {
+		return worker.main(args[1..args.len])
+	}
+
 	let left_arg = env_args().get(0) else ""
 	let right_arg = env_args().get(1) else left_arg
 	var panes = List[pane.Pane]()
@@ -575,6 +702,7 @@ fn main() -> !int {
 		status: List[byte](),
 		next_poll_ms: now_ms() + POLL_MS,
 		dlg: dialog.closed(),
+		copying: job.idle(),
 	}
 
 	run(mut a)
