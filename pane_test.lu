@@ -1,2 +1,185 @@
 //! member: false
+//! pane's tests: a scratch tree under the working directory, made
+//! and removed by each test.
+
+use pane
+use std.fs
+
+fn tree(root: str) {
+	fs.remove_dir_all(root) else |_| {}
+	fs.create_dir_all("{root}/beta") else |_| {}
+	fs.create_dir_all("{root}/Alpha") else |_| {}
+	fs.write_text("{root}/zeta.txt", "z") else |_| {}
+	fs.write_text("{root}/apple", "12345") else |_| {}
+	fs.write_text("{root}/.hidden", "h") else |_| {}
+	fs.write_text("{root}/Banana", "b") else |_| {}
+}
+
+fn names(p: pane.Pane) -> str {
+	var s = ""
+	var i = 0
+
+	while i < p.entries.len {
+		s += pane.display_name(p, i) + " "
+
+		i += 1
+	}
+	
+	s
+}
+
+fn test_lists_directories_first_then_names() {
+	tree("pt-sort.tmp")
+	var p = pane.new("pt-sort.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	let got = names(p)
+
+	fs.remove_dir_all("pt-sort.tmp") else |_| {}
+	assert(got == "Alpha beta apple Banana zeta.txt ", "order: {got}")
+}
+
+fn test_sizes_and_kinds() {
+	tree("pt-kinds.tmp")
+	fs.symlink("beta", "pt-kinds.tmp/link-to-beta") else |_| {}
+	var p = pane.new("pt-kinds.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	let got = names(p)
+	let apple = p.entries[3]
+	let link = p.entries[2]
+
+	fs.remove_dir_all("pt-kinds.tmp") else |_| {}
+
+	assert(got == "Alpha beta link-to-beta apple Banana zeta.txt ", "order: {got}")
+	assert(apple.size == 5 && apple.kind == pane.KIND_FILE, "apple: {apple.size} {apple.kind}")
+	assert(link.kind == pane.KIND_LINK && link.to_dir, " a link to a directory goes in")
+}
+
+fn test_reload_keeps_the_cursor_on_its_name() {
+	tree("pt-keep.tmp")
+	var p = pane.new("pt-keep.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "reload failed")
+	}
+
+	let at = pane.display_name(p, p.cursor)
+	fs.remove_dir_all("pt-keep.tmp") else |_| {}
+	assert(at == "apple", "cursor on {at}")
+}
+
+fn test_enter_and_up() {
+	tree("pt-nav.tmp")
+	fs.write_text("pt-nav.tmp/beta/inside", "i") else |_| {}
+	var p = pane.new("pt-nav.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	p.cursor = 1
+	let went = pane.enter(mut p) else false
+	let inside = names(p)
+	let path_in = pane.path_of(p)
+
+	pane.up(mut p) ese |_| {
+		assert(false, "up failed")
+	}
+
+	let back = pane.display_name(p, p.cursor)
+	p.cursor = 3
+	let into_file = pane.enter(mut p) else true
+
+	fs.remove_dir_all("pt-nav.tmp") else |_| {}
+
+	assert(went && inside == "inside ", "entered: {inside}")
+	assert(path_in == "pt-nav.tmp/beta", "path {path_in}")
+	assert(back == "beta", "up lands on the directory we left, not {back}")
+	assert(!into_file, "a file is not entered")
+}
+
+fn test_a_missing_directory_keeps_the_old_listing() {
+	tree("pt-gone.tmp")
+	var p = pane.new("pt-gone.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	let before = names(p)
+	fs.remove_dir_all("pt-gone.tmp") else |_| {}
+	var tag = "none"
+
+	pane.load(mut p) else |e| match e {
+		not_found => { tag = "not_found" },
+		denied => { tag = "denied " },
+		io => { tag = "io" },
+	}
+
+	assert(tag == "not_found", "tag {tag}")
+	assert(names(p) == beforem "the old listing stays")
+}
+
+fn test_settle_keeps_the_window_around_the_cursor() {
+	var p = pane.new("/")
+	var i = 0
+
+	while i < 50 {
+		(mut p.entries).push(pane.Entry {
+			off: 0, 
+			len: 0,
+			kind: 0, 
+			size: 0,
+			mode: 0,
+			mtime_s: 0,
+			to_dir: false,
+			utf8: true, 
+			marked: false
+		})
+
+		i += 1
+	}
+
+	p.cursor = 30
+	pane.settle(mut p, 10)
+	assert(p.top == 21, "top {p.top}")
+
+	p.cursor = 5
+	pane.settle(mut p, 10)
+	assert(p.top == 5, "top {p.top}")
+
+	p.cursor = 99
+	pane.settle(mut p, 10)
+	assert(p.cursor == 49 && p.top == 40, "end {p.cursor} {p.top}")
+
+	pane.settle(mut p, 100)
+	assert(p.top == 0, "a tall window shows everything")
+}
+
+fn test_human_sizes() {
+	assert(pane.human_size(0) == "0", "0")
+	assert(pane.human_size(1023) == "1023", "1023")
+	assert(pane.human_size(1024) == "1.0K", "1K")
+	assert(pane.human_size(1536) == "1.5K", "1.5K")
+	assert(pane.human_size(10 * 1024) == "10K", "10K")
+	assert(pane.human_size(5 * 1024 * 1024 + 1) == "5.0M", "5M")
+	assert(pane.human_size(3 * 1024 * 1024 * 1024) == "3.0G", "3G")
+	assert(pane.human_size(5 * 1024 * 1024 * 1024 * 1024) == "5.0T", "5T, past 2^31")
+}
+
+fn test_mode_strings() {
+	assert(pane.mode_string(1, 493) == "drwxr-xr-x", "755 dir")
+	assert(pane.mode_string(0, 420) == "-rw-r--r--", "644 file")
+	assert(pane.mode_string(3, 511) == "lrwxrwxrwx", "link")
+	assert(pane.mode_string(1, 1023) == "drwxrwxrwt", "sticky")
+	assert(pane.mode_string(0, 2541) == "-rwsr-xr-x", "setuid")
+	assert(pane.mode_string(0, 2464) == "-rwSr-----", "setuid, no x")
+}
 
