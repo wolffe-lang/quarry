@@ -583,7 +583,7 @@ pub fn changed(p: Pane) -> int {
 			match e {
 				not_found => {
 					answer = 2
-				}.
+				},
 				denied => {},
 				io => {},
 			}
