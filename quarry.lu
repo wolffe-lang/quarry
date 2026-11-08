@@ -1,7 +1,8 @@
 //! member: false
-//! quarry, step 3: a screen you diff, not redraw. Two framed panes of 
-//! placeholder rows and a reverse-video bar the arrows move. The status
-//! line shows how many bytes the last frame wrote
+//! quarry, step 4: the loop that never lags. One wait over the keyboard,
+//! signals and the ESC deadline; ALL waiting input is drained and applied
+//! before ONE frame is drawn; drawing, rendering and reading happen in a
+//! region that dies at the end of each turn
 
 use grid
 use keys
@@ -10,6 +11,26 @@ use std.fs
 use std.signal
 use std.time
 use tty
+
+/// The longest input quarry drains in one turn before it draws.
+const DRAIN_MAX: int = 262144
+
+/// Everything the program knows
+struct App {
+	t: tty.Tty, 
+	look: grid.Look,
+	front: grid.Grid,
+	back: grid.Grid,
+	out: List[byte],
+	dec: keys.Decoder,
+	running: bool,
+	dirty: bool,
+	bar: int,
+	last_bytes: int,
+	last_frame_us: int,
+	keys_last_turn: int,
+}
+
 
 /// Box drawing unless the terminal is dumb, color unless NO_COLOR.
 fn look_from_env() -> grid.Look {
@@ -20,8 +41,12 @@ fn look_from_env() -> grid.Look {
 	grid.Look { gl: gl, color: no_color == "" && term != "dumb" }
 }
 
-/// Draw the whole demo screen into `g`.
-fn draw(mut g: grid.Grid, look: grid.Look, bar: int, last_bytes: int) {
+fn now_ms() -> int {
+	time.monotonic_ns() / 1000000
+}
+
+/// Draw the whole screen into the back grid. Pure: no I/O.
+fn draw(mut g: grid.Grid, look: grid.Look, bar: int, bytes: int, us: int, keys_seen: int) {
 	grid.clear(mut g)
 	let half = g.cols / 2
 	let h = g.rows - 1
@@ -32,37 +57,173 @@ fn draw(mut g: grid.Grid, look: grid.Look, bar: int, last_bytes: int) {
 	var row = 1
 	while row < h -1 {
 		let attr = if row - 1 == bar then grid.ATTR_REVERSE else 0
-		let fg = if look.color && row % 3 == 0 then 4 else grid.DEFAULT
 
-		grid.fill(mut g, row, 1, half - 2, 32, fg, grid.DEFAULT, attr)
-		grid.puts(mut g, row, 2, half - 4, "entry {row - 1}", fg, grid.DEFAULT, attr)
-		grid.puts(
+
+		grid.fill(mut g, row, 1, half - 2, 32, grid.DEFAULT, grid.DEFAULT, attr)
+		let _ = grid.puts(
 			mut g,
-			row, half + 2,
-			g.cols - half - 4,
+			row,
+			2,
+			half - 4,
 			"entry {row - 1}",
 			grid.DEFAULT,
-			grid.DEFAULT, 0,
+			grid.DEFAULT,
+			attr,
 		)
 
 		row += 1
 	}
 
-	let _ = grid.puts(
-		mut g,
-		g.rows - 1, 
-		0,
-		g.cols - 1,
-		" last frame: {last_bytes} bytes   q quits",
-		grid.DEFAULT, 
-		grid.DEFAULT,
-		0,
-	)
+	let status = " frame {bytes} B in {us} us, {keys_seen} keys last turn   q quits"
+	let _ = grid.puts(mut g, g.rows - 1, 0, g.cols - 1, status, grid.DEFAULT, grid.DEFAULT, 0)
 }
+
+/// Draw, diff, write once. The strings built while drawing and the
+/// escape sequences built while rendering die with the region.
+fn paint(mut a: App) {
+	let t0 = time.monotonic_ns()
+	(mut a.out).reset()
+
+	region scratch {
+		draw(mut a.back, a.look, a.bar, a.last_bytes, a.last_frame_us, a.keys_last_turn)
+		a.last_bytes = grid.render(a.front, a.back, mut a.out)
+	}
+
+	tty.write(a.out) else |_| {
+		a.running = false
+	}
+
+	grid.assign(mut a.front, a.back)
+	a.last_frame_us = (time.monotonic_ns() - t0) / 1000
+	a.dirty = false
+}
+
+/// How long the wait may sleep: until the ESC deadline, or forever.
+fn wait_ms(a: App) -> int {
+	let due = keys.deadline(a.dec)
+
+	if due < 0 {
+		return -1
+	}
+
+	let now = now_ms()
+	if due > now then due - now else 0
+}
+
+/// The window changed size: new grids, everything redrawn.
+fn resized(mut a: App) {
+	tty.refresh_size(mut a.t)
+	grid.resize(mut a.front, a.t.rows, a.t.cols)
+	grid.invalidate(mut a.front)
+	grid.resize(mut a.back, a.t.rows, a.t.cols)
+	a.dirty = true
+}
+
+/// Read everything waiting on stdin into the decoder: read, then look
+/// again without sleeping, until nothing is left (or DRAIN_MAX). A 
+/// signal meaning seen while looking is handed back, never dropped.
+fn drain(mut a: App, files: List[fs.File]) -> int {
+	var total = 0
+	loop {
+		var got = 0
+		var ended = false
+		region scratch {
+			let bytes = tty.read(4096) else |_| {
+				List[byte]()
+			}
+
+			if bytes.len == 0 {
+				ended = true
+			}
+
+			keys.feed(mut a.dec, bytes)
+			got = bytes.len
+		}
+
+		if ended {
+			a.running = false
+			return 0
+		}
+
+		total += got
+		if total >= DRAIN_MAX {
+			return 0
+		}
+
+		let w = tty.wait(files, 0) else |_| {
+			return 0
+		}
+
+		if w.meaning != 0 || w.ready != 0 {
+			return w.meaning
+		}
+	}
+}
+
+/// One key changes the model, never the screen
+fn on_key(mut a: App, k: keys.Key) {
+	if k.code == 113 && k.mods == 0 {
+		a.running = false
+	} else if k.code == keys.K_DOWN && a.bar < a.t.rows - 4 {
+		a.bar += 1
+	} else if k.code == keys.K_UP && a.bar > 0 {
+		a.bar -= 1
+	} else if k.code == keys.K_HOME {
+		a.bar = 0
+	} else if k.code == keys.K_END {
+		a.bar = a.t.rows - 4
+	}
+	a.dirty = true
+}
+
+fn run(mut a: App) {
+	var files = List[fs.File]()
+	(mut files).push(fs.stdin())
+	var k = keys.Key { code: 0, mods: 0 }
+
+	while a.running {
+		if a.dirty {
+			paint(mut a)
+		}
+
+		let w = tty.wait(files, wait_ms(a)) else |_| {
+			break
+		}
+
+		var meaning = w.meaning
+
+		if w.ready == 0 {
+			meaning = meaning | drain(mut a, files)
+		}
+
+		if meaning & signal.resize() != 0 {
+			resized(mut a)
+		}
+
+		if meaning & !signal.resize() != 0 {
+			break
+		}
+
+		var n = 0
+		while keys.next(mut a.dec, now_ms(), mut k) {
+			on_key(mut a, k)
+
+			n += 1
+		}
+
+		if n > 0 {
+			a.keys_last_turn = n
+		}
+	}
+}
+
+
+
+
 
 fn main() -> !int {
 	var t = tty.open() else |e| {
-		eprint("quarry: standard input and ouput must be a terminal ({e})")
+		eprint("quarry: standard input and output must be a terminal ({e})")
 		return 1
 	}
 
@@ -71,75 +232,27 @@ fn main() -> !int {
 		return 1
 	}
 
-	let look = look_from_env()
 	var front = grid.new(t.rows, t.cols)
-
 	grid.invalidate(mut front)
+	let back = grid.new(t.rows, t.cols)
 
-	var back = grid.new(t.rows, t.cols)
-	var out = List[byte]()
-	var bar = 0
-	var last_bytes = 0
-	var files = List[fs.File]()
-
-	(mut files).push(fs.stdin())
-
-	var dec = keys.new()
-	var k = keys.Key { code: 0, mods: 0 }
-	var running = true
-
-	while running {
-		draw(mut back, look, bar, last_bytes)
-		(mut out).reset()
-		last_bytes = grid.render(front, back, mut out)
-
-		tty.write(out) else |_| {
-			break
-		}
-
-		grid.assign(mut front, back)
-
-		let now = time.monotonic_ns() / 1000000
-		let due = keys.deadline(dec)
-		let wait_ms = if due < 0 then -1 else if due > now then due - now else 0
-
-		let w = tty.wait(files, wait_ms) else |_| {
-			break
-		}
-
-		if w.meaning != 0 {
-			if w.meaning & signal.resize() != 0 {
-				tty.refresh_size(mut t)
-				grid.resize(mut front, t.rows, t.cols)
-				grid.invalidate(mut front)
-				grid.resize(mut back, t.rows, t.cols)
-
-				continue
-			}
-
-			break
-		}
-
-		if w.ready == 0 {
-			let bytes = tty.read(256) else |_| {
-				break
-			}
-
-			keys.feed(mut dec, bytes)
-		}
-
-		while keys.next(mut dec, time.monotonic_ns() / 1000000, mut k) {
-			if k.code == 113 && k.mods == 0 {
-				running = false
-			} else if k.code == keys.K_DOWN && bar < t.rows - 4 {
-				bar += 1
-			} else if k.code == keys.K_UP && bar > 0 {
-				bar -= 1
-			}
-		}
+	var a = App {
+		t: t,
+		look: look_from_env(),
+		front: front, 
+		back: back,
+		out: List[byte](), 
+		dec: keys.new(),
+		running: true, 
+		dirty: true,
+		bar: 0,
+		last_bytes: 0,
+		last_frame_us: 0,
+		keys_last_turn: 0,
 	}
 
-	tty.leave(mut t)
+	run(mut a)
+	tty.leave(mut a.t)
 
 	0
 }
