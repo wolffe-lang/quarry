@@ -27,6 +27,12 @@ pub const BLACK: int = 0
 /// Color 7 of the 16: white (light grey on most terminals)
 pub const WHITE: int = 7
 
+/// The narrowest screen quarry draws panes on.
+pub const MIN_COLS: int = 40
+
+/// The shortest screen quarry draws panes on.
+pub const MIN_ROWS: int = 10
+
 /// Rows the panes leave for entries on a screen `rows` tall: the frame
 /// takes two, the status line and the key bar one each.
 pub fn list_rows(rows: int) -> int {
@@ -246,6 +252,14 @@ pub fn draw(
 	keybar: str,
 ) {
 	grid.clear(mut g)
+	if g.cols < MIN_COLS || g.rows < MIN_ROWS {
+		// One line, clipped like every other: nothing can index outside
+		let msg = "quarry needs {MIN_COLS}x{MIN_ROWS}; this is {g.cols}x{g.rows}"
+		let _ = grid.puts(mut g, 0, 0, g.cols, msg, grid.DEFAULT, grid.DEFAULT, grid.ATTR_BOLD)
+
+		return
+	}
+
 	let height = g.rows - 2
 	let half = g.cols / 2
 
