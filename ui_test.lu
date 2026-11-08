@@ -27,6 +27,7 @@ fn test_two_panes_at_80_by_24() {
 	fs.write_text("ut-screen.tmp/readme.md", "hello") else |_| {}
 
 	let base = fs.realpath("ut-screen.tmp") else ""
+	let home = fs.parent(base) else ""
 	var p = pane.new(base)
 
 	pane.load(mut p) else |_| {
