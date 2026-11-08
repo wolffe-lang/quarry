@@ -636,7 +636,7 @@ pub fn cursor_to(mut p: Pane, name: str) -> bool {
 	region scratch {
 		var b = List[byte]()
 
-		for x in name.bytes {
+		for x in name.bytes() {
 			(mut b).push(x)
 		}
 
@@ -654,7 +654,7 @@ pub fn cursor_to(mut p: Pane, name: str) -> bool {
 /// Mark or unmark the entry under the cursor.
 pub fn toggle_mark(mut p: Pane) {
 	if p.cursor < p.entries.len {
-		p.entries[p.cursor[].marked = !p.entried[p.cursor].marked
+		p.entries[p.cursor].marked = !p.entries[p.cursor].marked
 	}
 }
 

@@ -202,7 +202,7 @@ fn test_changed_sees_a_new_name_and_a_vanished_directory() {
 
 	// A directory's time moves when a name is added. Wait out a coarse
 	// clock by setting the time explicitly instead of sleeping
-	fs.write_text("pt-changed.tmp", "n") else |_| {}
+	fs.write_text("pt-changed.tmp/new", "n") else |_| {}
 	fs.set_times("pt-changed.tmp", fs.time_keep(), fs.time(p.seen_s + 5, 0)) else |_| {}
 
 	let moved = pane.changed(p)
