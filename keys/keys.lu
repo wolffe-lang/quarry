@@ -219,11 +219,172 @@ fn csi(d: Decoder, mut out: Key) -> int {
 	}
 }
 
+/// Bytes a UTF-8 sequence starting with `b` takes, or 1 for a bad lead.
+fn utf8_len(b: int) -> int {
+	if b < 128 { return 1 }
+	if b >= 194 && b <= 223 { return 2 }
+	if b >= 224 && b <= 239 { return 3 }
+	if b >= 240 && b <= 244 { return 4 }
+	1
+}
 
+/// Produce the next key, if one is complete. `now_ms` is the monotonic
+/// clock in milliseconds. Answers false when nothing (or only part of a
+/// sequence) is pending.
+pub fn next(mut d: Decoder, now_ms: int, mut out: Key) -> bool {
+	let b0 = at(d, 0)
 
+	if b0 < 0 {
+		return false
+	}
 
+	if b0 == 27 {
+		let b1 = at(d, 1)
+		if b1 < 0 {
+			// A lone ESC: a key, or the start of a sequence still arriving.
+			if d.esc_deadline_ms < 0 {
+				d.esc_deadline_ms = now_ms + ESC_TIMEOUT_MS
+				return false
+			}
 
+			if now_ms < d.esc_deadline_ms {
+				return false
+			}
 
+			d.esc_deadline_ms = -1
+			consume(mut d, 1)
+
+			return emit(mut out, K_ESC, 0)
+		}
+
+		if b1 == 91 {
+			let used = csi(d, mut out)
+			if used == 0 { return false }
+			consume(mut d, used)
+			return true
+		}
+
+		if b1 == 79 {
+			// SS3: xterms F1-F4 and application-mode arrows and Home/End.
+			let f = at(d, 2)
+			if f < 0 { return false }
+			consume(mut d, 3)
+
+			return emit(mut out, letter_key(f), 0)
+		}
+
+		if b1 == 27 {
+			consume(mut d, 1)
+			return emit(mut out, K_ESC, 0)
+		}
+
+		// ESC then a key: that key with Alt.
+		consume(mut d, 1)
+		let ok = next(mut d, now_ms, mut out)
+		if ok { out.mods = out.mods | MOD_ALT }
+
+		return ok
+	}
+	
+	if b0 == 13 || b0 == 10 {
+		consume(mut d, 1)
+		return emit(mut out, K_ENTER, 0)
+	}
+
+	if b0 == 9 {
+		consume(mut d, 1)
+		return emit(mut out, K_TAB, 0)
+	}
+
+	if b0 == 127 || b0 == 8 {
+		consume(mut d, 1)
+		return emit(mut out, K_BACKSPACE, if b0 == 8 then MOD_CTRL else 0)
+	}
+
+	if b0 < 32 {
+		// Ctrl+A .. Ctrl+z arrive as 1..26.
+		consume(mut d, 1)
+		return emit(mut out, b0 + 96, MOD_CTRL)
+	}
+
+	let n = utf8_len(b0)
+
+	if d.pending.len < n {
+		return false
+	}
+
+	var cp = b0
+	if n == 2 { cp = b0 & 31 }
+	if n == 3 { cp = b0 & 15 }
+	if n == 4 { cp = b0 & 7 }
+
+	var i = 1
+	while i < n {
+		cp = cp * 64 + (at(d, i) & 63)
+		i += 1
+	}
+
+	consume(mut d, n)
+	emit(mut out, cp, 0)
+}
+
+/// True for a value `as char` accepts: 0..0x10FFFF minus the surrogates.
+/// (`int as char` traps on anything else.)
+pub fn is_scalar(c: int) -> bool {
+	c >= 0 && c < 55296 || c >= 57344 && c < 1114112
+}
+
+/// A key's name, for the key viewer and for status messages.
+pub fn name(k: Key) -> str {
+	var base = ""
+	let c = k.code
+
+	if c == K_UP {
+		base = "Up"
+	} else if c == K_DOWN {
+		base = "Down"
+	} else if c == K_LEFT {
+		base = "Left"
+	} else if c == K_RIGHT {
+		base = "Right"
+	} else if c == K_HOME {
+		base = "Home"
+	} else if c == K_END {
+		base = "End"
+	} else if c == K_PGUP {
+		base = "PgUp"
+	} else if c == K_PGDN {
+		base = "PgDn"
+	} else if c == K_INS {
+		base = "Ins"
+	} else if c == K_DEL {
+		base = "Del"
+	} else if c == K_ESC {
+		base = "Escape"
+	} else if c == K_ENTER {
+		base = "Enter"
+	} else if c == K_TAB {
+		base = "Tab"
+	} else if c == K_BACKSPACE {
+		base = "Backspace"
+	} else if c == K_UNKNOWN {
+		base = "Unknown"
+	} else if c > K_F0 && c <= K_F0 + 24 {
+		base = "F{c - K_F0}"
+	} else if c == 32 {
+		base = "Space"
+	} else if is_scalar(c) {
+		base = "'{c as char}'"
+	} else {
+		base = "U+{c}"
+	}
+
+	var pre = ""
+	if k.mods & MOD_CTRL != 0 { pre += "Ctrl+" }
+	if k.mods & MOD_ALT != 0 { pre += "Alt+" }
+	if k.mods & MOD_SHIFT != 0 { pre += "Shift+" }
+	"{pre}{base}"
+}
 
 
 
