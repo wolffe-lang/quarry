@@ -1,0 +1,227 @@
+//! grid: the screen as data. A grid is rows x cols cells; drawing writes
+//! cells and clips at the edges, so no drawing code can index outside the
+//! screen. `render` (render.lu) turns two grids into terminal bytes.
+
+/// Bold (PAX's console draws it as the bright color).
+pub const ATTR_BOLD: int = 1
+
+/// Reverse video: the crusor bar. Every terminal has it.
+pub const ATTR_REVERSE: int = 2
+
+/// Underline (PAX substitutes a color).
+pub const ATTR_UNDERLINE: int = 4
+
+/// The terminal's own default color.
+pub const DEFAULT: int = -1
+
+/// One screen position: the code point drawn, its colors (0-15, or
+/// DEFAULT) and its attributes. cp -1 means "unknown": it never matches,
+/// so the next renvder rewrites it.
+pub struct Cell {
+	cp: int,
+	fg: int, 
+	bg: int,
+	attr: int,
+}
+
+/// The screen: rows x cols cells, row-major
+pub struct Grid {
+	rows: int,
+	cols: int,
+	cells: List[Cell],
+}
+
+/// The frame's line-drawing characters.
+pub struct Glyphs {
+	h: int,
+	v: int,
+	tl: int,
+	tr: int, 
+	bl: int,
+	br: int,
+}
+
+/// How quarry looks on this terminal: the glyph set and whether to color.
+pub struct Look {
+	gl: Glyphs,
+	color: bool,
+}
+
+/// Borders. Drawn by PAX's console and every modern terminal.
+pub fn box_glyphs() -> Glyphs {
+	Glyphs { h: 9472, v: 9474, tl: 9484, tr: 9488, bl: 9492, br: 9496 }
+}
+
+/// - | + + + +: for TERM=dumb or a terminal with no line drawing.
+pub fn ascii_glyphs() -> Glyphs {
+	Glyphs { h: 45, v: 124, tl: 43, tr: 43, bl: 43, br: 43 }
+}
+
+/// A blank cell in the default colors.
+pub fn blank() -> Cell {
+	Cell { cp: 32, fg: DEFAULT, bg: DEFAULT, attr: 0 }
+}
+
+/// A grid of blanks.
+pub fn new(rows: int, cols: int) -> Grid {
+	let r = if rows < 0 then 0 else rows
+	let c = if cols < 0 then 0 else cols
+	var cells = List[Cell]()
+	var i = 0
+
+	while i < r * c {
+		(mut cells).push(blank())
+		i += 1
+	}
+
+	Grid { rows: r, cols: c, cells: cells }
+}
+
+/// Make `g` rows x cols of blanks, reusing its storage (assigning a new
+/// grid would keep the old cells until the program ends).
+pub fn resize(mut g: Grid, rows: int, cols: int) {
+	let r = if rows < 0 then 0 else rows
+	let c = if cols < 0 then 0 else cols
+
+	(mut g.cells).reset()
+
+	var i = 0
+	while i < r * c {
+		(mut g.cells).push(blank())
+		i += 1
+	}
+	
+	g.rows = r
+	g.cols = c
+}
+
+/// Copy `src`'s cells into `dst` in place (after a frame is written,
+/// the screen the terminal shows is the one quarry drew)'
+pub fn assign(mut dst: Grid, src: Grid) {
+	if dst.rows != src.rows || dst.cols != src.cols {
+		resize(mut sdt, src.rows, src.cols)
+	}
+
+	var i = 0
+	while i < src.cells.len {
+		dst.cells[i] = src.cells[i]
+		i += 1
+	}
+}
+
+/// Every cell blank again.
+pub fn clear(mut g: Grid) {
+	var i = 0
+	while i < g.cells.len {
+		g.cells[i] = blank()
+		i += 1
+	}
+}
+
+/// Every cell unknown, so the next render rewrites the whole screen
+/// (after a resize, or after another program used the terminal).
+pub fn invalidate(mut g: Grid) {
+	var i = 0
+	while i < g.cells.len {
+		g.cells[i] = Cell { cp: -1, fg: DEFAULT, bg: DEFAULT, attr: 0 }
+		i += 1
+	}
+}
+
+/// The cell at (r, c); a blank outside the grid.
+pub fn cell_at(g: Grid, r: int, c: int) -> Cell {
+	if r < 0 || c < 0 || r >= g.rows || c >= g.cols {
+		return blank()
+	}
+
+	g.cells[r * g.cols + c]
+}
+
+/// Write one cell; outside the grid it does nothing.
+pub fn put(mut g: Grid, r: int, c: int, cp: int, fg: int, bg: int, attr: int) {
+	if r < 0 || c < 0 || r >= g.rows || c >= g.cols {
+		return
+	}
+
+	g.cells[r * g.cols + c] = Cell { cp: cp, fg: fg, bg: bg, attr: attr }
+}
+
+/// Draw `text` from (r, c) at most `width` cells, one cell per code
+/// point (PAX's rule; see the guide on wider characters). Control
+/// charcters are drawn as `?` so text can never drive the terminal.
+/// Answers the cells used
+pub fn puts(
+	mut g: Grid,
+	r: int,
+	c: int,
+	width: int,
+	text: str,
+	fg: int,
+	bg: int,
+	attr: int,
+) -> int {
+	var used = 0
+
+	for ch in text.chars() {
+		if used >= width {
+			break
+		}
+
+		var cp = ch as int
+		if cp < 32 || cp == 127 || cp >= 128 && cp <= 160 {
+			cp = 63
+		}
+
+		put(mut g, r, c + used, cp, fg, bg, attr)
+		used += 1
+	}
+
+	used
+}
+
+/// `width` copies of `cp` from (r, c)
+pub fn fill(mut g: Grid, r: int, c: int, width: int, cp: int, fg: int, bg: int, attr: int) {
+	var i = 0
+
+	while i < width {
+		put(mut g, r, c + i, cp, fg, bg, attr)
+		i += 1
+	}
+}
+
+pub fn frame(mut g: Grid, top: int, left: int, h: int, w: int, gl: Glyphs, fg: int) {
+	if h < 2 || w < 2 {
+		return 
+	}
+
+	put(mut g, top, left, gl.tl, fg, DEFAULT, 0)
+	put(mut g, top, left + w - 1, gl.tr, fg, DEFAULT, 0)
+	put(mut g, top + h - 1, left, gl.bl, fg, DEFAULT, 0)
+	put(mut g, top + h - 1, left + w - 1, gl.br, fg, DEFAULT, 0)
+
+	fill(mut g, top, left + 1, w - 2, gl.h, fg, DEFAULT, 0)
+	fill(mut g, top + h - 1, left + 1, w -2, gl.h, fg, DEFAULT, 0)
+
+	var r = top + 1
+	while r < top + h - 1 {
+		put(mut g, r, left, gl.v, fg, DEFAULT, 0)
+		put(mut g, r, left + w - 1, gl.v, fg, DEFAULT, 0)
+
+		r += 1
+	}
+}
+
+/// Row r as text (for tests and snapshots); unknown cells read as `.`.
+pub fn row_text(g: Grid, r: int) -> str {
+	var out = ""
+	var c = 0
+
+	while c < g.cols {
+		let cp = cell_at(g, r, c).cp
+		out += if cp < 0 then '.' else cp as char
+
+		c += 1
+	}
+
+	out
+}
