@@ -16,7 +16,11 @@ use ui
 /// The longest input quarry drains in one turn before it draws.
 const DRAIN_MAX: int = 262144
 
-const KEYBAR: str = " Tab Pane  Enter Open  Bksp Up  . Hidden  q Quit"
+/// How often quarry looks at the panes' directories, in milliseconds
+const POLL_MS: int = 1000
+
+/// The last row of the screen: what the keys do.
+const KEYBAR: str = " Tab Pane  Enter Open  Bksp Up  . Hidden  ^R Reload  q Quit"
 
 /// Everything the program knows
 struct App {
@@ -31,7 +35,8 @@ struct App {
 	panes: List[pane.Pane],
 	active: int,
 	home: str,
-	status: List[byte]
+	status: List[byte],
+	next_poll_ms: int,
 }
 
 
@@ -81,14 +86,16 @@ fn paint(mut a: App) {
 	a.dirty = false
 }
 
-/// How long the wait may sleep: until the ESC deadline, or forever.
+/// How long the wait may sleep: until the ESC deadline, or the next look
+/// at the disk, whichever is sooner.
 fn wait_ms(a: App) -> int {
-	let due = keys.deadline(a.dec)
+	var due = a.next_poll_ms
+	let esc = keys.deadline(a.dec)
 
-	if due < 0 {
-		return -1
+	if esc >= 0 && esc < due {
+		due = esc
 	}
-
+	
 	let now = now_ms()
 	if due > now then due - now else 0
 }
@@ -162,6 +169,57 @@ fn go_up(mut a: App) {
 	}
 }
 
+/// Pane `i`'s directory vanished: walk up and say where we landed.
+fn recover(mut a: App, i: int) {
+	if pane.recover(mut a.panes[i]) {
+		say(mut a, "that directory is gone; now in {pane.path_of(a.panes[i])}")
+	} else {
+		say(mut a, "that directory is gone, and nothing above it can be listed")
+	}
+}
+
+/// Read pane `i` again.
+fn reload(mut a: App, i: int) {
+	pane.load(mut a.panes[i]) else |e| match e {
+		not_found => {
+			recover(mut a, i)
+		},
+		denied => {
+			say(mut a, "cannot reload: denied")
+		},
+		io => {
+			say(mut a, "cannot reload: io")
+		},
+	}
+}
+
+/// Once a second: reload a pane whose directory changed, and walk up
+/// from one that vanished
+fn poll_disk(mut a: App) {
+	let now = now_ms()
+	if now < a.next_poll_ms {
+		return
+	}
+
+	a.next_poll_ms = now + POLL_MS
+	var i = 0
+	while i < 2 {
+		region scratch {
+			let c = pane.changed(a.panes[i])
+
+			if c == 1 {
+				reload(mut a, i)
+				a.dirty = true
+			} else if c == 2 {
+				recover(mut a, i)
+				a.dirty = true
+			}
+		}
+
+		i += 1
+	}
+}
+
 /// Show or hide dot files in the active pane.
 fn toggle_hidden(mut a: App) {
 	a.panes[a.active].show_hidden = !a.panes[a.active].show_hidden
@@ -199,6 +257,9 @@ fn on_key(mut a: App, k: keys.Key) {
 		go_up(mut a)
 	} else if c == 46 && plain {
 		toggle_hidden(mut a)
+	} else if c == 114 && k.mods == keys.MOD_CTRL {
+		reload(mut a, 0)
+		reload(mut a, 1)
 	}
 
 	a.dirty = true
@@ -224,14 +285,23 @@ fn run(mut a: App) {
 			meaning = meaning | drain(mut a, files)
 		}
 
+		if meaning & signal.suspend() != 0 {
+			tty.suspend(mut a.t) else |_| {
+				break
+			}
+
+			resized(mut a)
+		}
+
 		if meaning & signal.resize() != 0 {
 			resized(mut a)
 		}
 
-		if meaning & !signal.resize() != 0 {
+		if meaning & !(signal.resize() | signal.suspend()) != 0 {
 			break
 		}
 
+		poll_disk(mut a)
 		while a.running &&  keys.next(mut a.dec, now_ms(), mut k) {
 			region scratch {
 				on_key(mut a, k)
@@ -295,6 +365,7 @@ fn main() -> !int {
 		active: 0, 
 		home: env.get("HOME") else "",
 		status: List[byte](),
+		next_poll_ms: now_ms() + POLL_MS,
 	}
 
 	run(mut a)
