@@ -1,0 +1,227 @@
+//! job: the UI's side of a background copy. It starts quarry itself as a 
+//! worker with stdout and stderr on a pipe, reads the worker's lines
+//! when the pipe is ready, and keeps the numbers the progress bar needs.
+//! Nothing is shared with the worker, so nothing can race
+
+use std.fs
+use std.hex
+use std.process
+
+/// One background copy, or none (`running` false).
+pub struct Job {
+	running: bool, 
+	child: process.Child,
+	out: fs.File,
+	line: List[byte],
+	total_files: int,
+	total_bytes: int,
+	current: List[byte],
+	failure: List[byte],
+	cancelled: bool,
+	status: int,
+}
+
+/// No job.
+pub fn idle() -> Job {
+	Job {
+		running: false,
+		child: process.Child { slot: -1 },
+		out: fs.File { fd: -1 },
+		line: List[byte](),
+		total_files: 0,
+		total_bytes: 0,
+		files: 0, 
+		bytes: 0,
+		current: List[byte](),
+		failure: List[byte](),
+		cancelled: false,
+		status: 0,
+	}
+}
+
+/// Why a job could not start
+
+pub error StartErrors = {unsupported, invalid, not_found, denied, io}
+
+/// Start `exe --worker copy dest sources...`. The worker leads its own
+/// process group, so a Ctrl-C at the terminal reaches quarry and not it.
+pub fn start(mut j: Job, exe: str, dest: str, sources: List[str]) -> () ! StartErrors {
+	var argv = List[str]()
+	(mut argv).push(exe)
+	(mut argv).push("--worker")
+	(mut argv).push("copy")
+	(mut argv).push(dest)
+
+	for s in sources {
+		(mut argv).push(s)
+	}
+
+	var c = process.from_argv(argv)
+	let p = process.pipe()?
+
+	process.set_stdout(mut c, p.write)
+	process.set_stderr(mut c, p.write)
+
+	let child = process.start_job(c, 0, 0) else |e| {
+		fs.close(take p.write) else |_| {}
+		fs.close(take p.read) else |_| {}
+
+		match e {
+			unsupported => {
+				return unsupported
+			},
+			invalid => {
+				return invalid
+			},
+			not_found => {
+				return not_found
+			},
+			denied => {
+				return denied
+			},
+			io => {
+				return io
+			},
+		}
+	}
+
+	// Close our copy of the write end, or the read end never sees eof.
+	fs.close(take p.write) else |_| {}
+
+	j.child = child
+	j.out = p.read
+	j.running = true
+	j.cancelled = false
+	j.total_files = 0
+	j.total_bytes = 0
+	j.files = 0
+	j.bytes = 0
+	j.status = 0
+
+	(mut j.line).reset()
+	(mut j.current).reset()
+	(mut j.failure).reset()
+}
+
+fn set_bytes(mut dst: List[byte], text: str) {
+	(mut dst).reset()
+
+	for b in text.bytes() {
+		(mut dst).push(b)
+	}
+}
+
+/// Take one complete line from the worker.
+pub fn take_line(mut j: Job, line: str) {
+	let words = line.words()
+	let kind = words.get(0) else ""
+
+	if kind == "total" {
+		j.total_files = (words.get(1) else "0").to_int() else 0
+		j.total_bytes = (words.get(2) else "0").to_int() else 0
+	} else if kind == "file" {
+		let raw = hex.decode(words.get(1) else"") else List[byte]()
+		(mut j.current).reset()
+
+		for b in raw {
+			(mut j.current).push(b)
+		}
+
+		j.files += 1
+	} else if kind == "bytes" {
+		j.bytes = (words.get(1) else "0").to_int() else 0
+	} else if kind == "done" || kind == "skip" {
+		// nothing to keep
+	} else if kind == "error" {
+		set_bytes(mut j.failure, line.get(6..line.len) else line)
+	} else if j.failure.len == 0 {
+		// Not a protocol line: a trap's message on stderr, say.
+		set_bytes(mut j.failure, line)
+	}
+}
+
+/// Read what the worker has written so far. Call it when `wait_fds`
+/// says the pipe is ready. Answers true when the worker has finished:
+/// the pipe reached its end and the child has been reaped into `status`.
+pub fn pump(mut j: Job) -> bool {
+	var ended = false
+
+	region scratch {
+		let chunk = fs.read_chunk(mut j.out, 4096) else |_| {
+			ended = true
+			List[byte]()
+		}
+
+		for b in chunk {
+			if b as int == 10 {
+				let line = str_from_utf8(j.line) else ""
+				take_line(mut j, line)
+				(mut j.line).reset()
+			} else {
+				(mut j.line).push(b)
+			}
+		}
+	}
+
+	if !ended {
+		return false
+	}
+
+	fs.close(take j.out) else |_| {}
+	j.out = fs.File { fd: -1 }
+	j.status = process.wait_status(take j.child) else -1
+	j.child = process.Child { slot: -1 }
+	j.running = false
+	true
+}
+
+/// Stop the worker. std's kill is SIGKILL (no gentler signal exists at
+/// this pin), so the worker cannot clean up: `clean_up` does that after
+/// `pump` sees the end.
+pub fn cancel(mut j: Job) {
+	if j.running && !j.cancelled {
+		process.kill(mut j.child) else |_| {}
+		j.cancelled = true
+	}
+}
+
+/// After a cancelled job ends: remove the file it was writing, if it is
+/// a regular file. Answers what it removed, or ""
+pub fn clean_up(mut j: Job) -> str {
+	if !j.cancelled || j.current.len == 0 {
+		return ""
+	}
+
+	let path = str_from_utf8(j.current) else ""
+	(mut j.current).reset()
+
+	let info = fs.lstat(path) else |_| {
+		return ""
+	}
+
+	if info.kind != 0 {
+		return ""
+	}
+
+	fs.remove(path) else |_| {
+		return ""
+	}
+
+	path
+}
+
+/// The fgraction done, in thousandths, by bytes (or by files when the 
+/// copy has no bytes to move).
+pub fn permille(j: Job) -> int {
+	if j.total_bytes > 0 {
+		let p = j.bytes * 1000 / j.total_bytes
+
+		return if p > 1000 then 1000 else p
+	}
+
+	if j.total_files > 0 {
+		return j.files * 1000 / j.total_files
+	}
+
+	0
+}
