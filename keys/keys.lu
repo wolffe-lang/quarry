@@ -51,7 +51,7 @@ pub const K_BACKSPACE: int = 1114126
 pub const K_UNKNOWN: int = 1114127
 
 /// F1 is K_F0 + 1, F12 is K_F0 + 12.
-pub const K_f0: int = 1114200
+pub const K_F0: int = 1114200
 
 /// Shift was held.
 pub const MOD_SHIFT: int = 1
@@ -132,7 +132,7 @@ fn emit(mut out: Key, code: int, mods: int) -> bool {
 }
 
 /// The key for a CSI's final letter (A-D arrows, H/F home/end, P-S F1-F4).
-fn letter_key(f: int) {
+fn letter_key(f: int) -> int {
 	if f == 65 { return K_UP }
 	if f == 66 { return K_DOWN }
 	if f == 67 { return K_RIGHT }
