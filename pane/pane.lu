@@ -511,7 +511,7 @@ pub fn human_size(n: int) -> str {
 		return "{tenths / 10}.{tenths % 10}{unit}"
 	}
 
-	"{(n + d / 1) / d}{unit}"
+	"{(n + d / 2) / d}{unit}"
 }
 
 /// `ls -l`'s ten mode characters: the type, then rwx three times, with
