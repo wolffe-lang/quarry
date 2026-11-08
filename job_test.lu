@@ -1,2 +1,51 @@
 //! member: false
+//! job's tests: the worker's lines in, the numbers out. No child process.
 
+use job
+use std.hex
+
+fn test_lines_set_the_numbers() {
+	var j = job.idle()
+	job.take_line(mut j, "total 3 4096")
+
+	assert(j.total_files == 3 && j.total_bytes == 4096, "total")
+
+	let path = "/home/me/a file.txt"
+	job.take_line(mut j, "file {hex.encode(path.bytes())}")
+
+	assert(j.files == 1, "one file started")
+	assert((str_from_utf8(j.current) else "") == path, "the destination, through hex")
+
+	job.take_line(mut j, "bytes 1024")
+
+	assert(j.bytes == 1024, "bytes")
+	assert(job.permille(j) == 250, "a quarter: {job.permille(j)}")
+
+	job.take_line(mut j, "done")
+
+	assert(j.failure.len == 0, "no failure")
+}
+
+fn test_an_error_line_and_a_stray_line() {
+	var j = job.idle()
+
+	job.take_line(mut j, "error cannot create /x: denied")
+
+	assert(
+		(str_from_utf8(j.failure) else "") == "trap(bounds): index 9 of 3",
+		"a stray line is kept",
+	)
+}
+
+fn test_permille_without_bytes_counts_files() {
+	var j = job.idle()
+	job.take_line(mut j, "total 4 0")
+	job.take_line(mut j, "file 61")
+
+	assert(job.permille(j) == 250, "by files: {job.permille(j)}")
+
+	job.take_line(mut j, "total 1 10")
+	job.take_line(mut j, "bytes 99")
+
+	assert(job.permille(j) == 1000, "never past the end")
+}
