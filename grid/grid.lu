@@ -99,7 +99,7 @@ pub fn resize(mut g: Grid, rows: int, cols: int) {
 /// the screen the terminal shows is the one quarry drew)'
 pub fn assign(mut dst: Grid, src: Grid) {
 	if dst.rows != src.rows || dst.cols != src.cols {
-		resize(mut sdt, src.rows, src.cols)
+		resize(mut dst, src.rows, src.cols)
 	}
 
 	var i = 0
@@ -189,6 +189,7 @@ pub fn fill(mut g: Grid, r: int, c: int, width: int, cp: int, fg: int, bg: int, 
 	}
 }
 
+/// A box with its top-left corner at (top, left), h rows by w columns
 pub fn frame(mut g: Grid, top: int, left: int, h: int, w: int, gl: Glyphs, fg: int) {
 	if h < 2 || w < 2 {
 		return 

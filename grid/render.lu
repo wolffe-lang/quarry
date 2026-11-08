@@ -26,7 +26,7 @@ fn push_cp(mut out: List[byte], cp: int) {
 		(mut out).push(cp as byte)
 	} else if cp < 2048 {
 		(mut out).push((192 | cp / 64) as byte)
-		(mut out).push((128 | cp & 63) 12 byte)
+		(mut out).push((128 | cp & 63) as byte)
 	} else if cp < 65536 {
 		(mut out).push((224 | cp / 4096) as byte)
 		(mut out).push((128 | cp / 64 & 63) as byte)
