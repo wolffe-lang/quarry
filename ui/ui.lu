@@ -2,6 +2,7 @@
 //! terminal or the file system, and quarry calls it inside the frame's
 //! scratch region, so every string built here dies with the frame.
 
+use job
 use dialog
 use grid
 use pane
@@ -386,4 +387,47 @@ pub fn draw_dialog(mut g: grid.Grid, look: grid.Look, d: dialog.Dialog) {
 			0,
 		)
 	}
+}
+
+/// The status line while a copy runs: how far, as a bar and in numbers.
+pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job) {
+	if g.cols < MIN_COLS || g.rows < MIN_ROWS {
+		return
+	}
+
+	let row = g.rows - 2
+
+	grid.fill(mut g, row, 0, g.cols, 32, grid.DEFAULT, grid.DEFAULT, 0)
+
+	let pm = job.permille(j)
+	let label = " Copy {j.files}/{j.total_files} "
+	let numbers = " {pm / 10}% {pane.human_size(j.bytes)} of {pane.human_size(j.total_bytes)}  Esc cancels"
+	var c = 1
+
+	c += grid.puts(
+		mut g,
+		row,
+		c,
+		cells(label),
+		label,
+		col(look, CYAN + 8),
+		grid.DEFAULT, 
+		grid.ATTR_BOLD,
+	)
+
+	let bar_w = g.cols - 1 - c - cells(numbers) - 2
+	if bar_w >= 4 {
+		// PAX's font has the full block (U+2588); an ASCOO look gets '#'.
+		let full = if look.gl.h == 45 then 35 else 9608
+		let filled = bar_w * pm / 1000
+
+		grid.put(mut g, row, c, 91, grid.DEFAULT, grid.DEFAULT, 0)
+		grid.fill(mut g, row, c + 1, filled, full, col(look, GREEN + 8), grid.DEFAULT, 0)
+		grid.fill(mut g, row, c + 1 + filled, bar_w - filled, 46, grid.DEFAULT, grid.DEFAULT, 0)
+		grid.put(mut g, row, c + 1 + bar_w, 93, grid.DEFAULT, grid.DEFAULT, 0)
+
+		c += bar_w + 2
+	}
+
+	let _ = grid.puts(mut g, row, c, g.col - c, numbers, grid.DEFAULT, grid.DEFAULT, 0)
 }
