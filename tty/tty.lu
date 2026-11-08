@@ -29,12 +29,18 @@ pub fn enter_bytes() -> str {
 
 /// Reset attributes, show the cursor, leave the alternate screen.
 pub fn leave_bytes() -> str {
-	"\x1b[0m\x1b[?25h\x1b?1049l"
+	"\x1b[0m\x1b[?25h\x1b[?1049l"
 }
 
-/// The signal meanings quarry listens for.
+/// The signal meanings quarry listens for. `suspend()` is Ctrl-Z: quarry hears
+/// it as an event, so it can give the terminal back before it stops
 pub fn signal_set() -> int {
-	signal.resize() | signal.interrupt() | signal.terminate() | signal.reload() | signal.quit()
+	signal.resize() 	|
+	signal.interrupt() 	|
+	signal.terminate() 	|
+	signal.reload() 	|
+	signal.quit()		|
+	signal.suspend()
 }
 
 fn bytes_of(s: str) -> List[byte] {
@@ -93,6 +99,10 @@ pub fn enter(mut t: Tty) -> () ! {io} {
 	let tout = fs.stdout()
 
 	std_term.restore_at_exit(tout, t.saved, bytes_of(leave_bytes())) else |_| {
+		return io
+	}
+
+	signal.listen(signal_set()) else |_| {
 		return io
 	}
 
@@ -176,44 +186,15 @@ pub fn wait(files: List[fs.File], ms: int) -> signal.Wake ! {io} {
 	signal.Wake { meaning: meaning, ready: ready }
 }
 
+/// Ctrl-Z: give the terminal back, stop the way a shell expects, and take
+/// the terminal again when the shell continues quarry (`fg`).
+pub fn suspend(mut t: Tty) -> () ! {io} {
+	leave(mut t)
+	// Back to the default action, then send it to ourselves: the process
+	// stops inside `raise`, and the call returns after `fg`.
+	signal.reset(signal.suspend()) else |_| {}
+	signal.raise(signal.suspend()) else |_| {}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	let _ = refresh_size(mut t)
+	enter(mut t)?
+}
