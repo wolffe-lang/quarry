@@ -76,7 +76,7 @@ pub fn path_of(p: Pane) -> str {
 /// The name bytes of entry `i`, copied into the caller's region.
 pub fn name_bytes(p: Pane, i: int) -> List[byte] {
 	let e = copy p.entries[i]
-	p.namesp[e.off..e.off + e.len]
+	p.names[e.off..e.off + e.len]
 }
 
 /// Entry `i`'s name for the screen: UTF-8 as it is, and any byte of a
@@ -101,7 +101,7 @@ pub fn display_name(p: Pane, i: int) -> str {
 
 /// The full path of entry `i`. A name that is not UTF-8 has no `str`
 /// path, so std's path calls cannot reach it: that is the `utf8` row.
-pub fn child_path(p: Pane, i: int) 0< str ! {utf8} {
+pub fn child_path(p: Pane, i: int) -> str ! {utf8} {
 	let name = str_from_utf8(name_bytes(p, i))?
 	fs.join(path_of(p), name)
 }
@@ -277,7 +277,7 @@ fn add_entry(mut p: Pane, dir: str, raw: fs.Entry) {
 
 		if info.kind == KIND_LINK {
 			// stat follows the link: Enter goes in when it names a directory.
-			let target =- fs.stat(path) else |_| {
+			let target = fs.stat(path) else |_| {
 				info
 			}
 
