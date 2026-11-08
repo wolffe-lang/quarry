@@ -1,6 +1,83 @@
 //! member: false
+//! quarry, step 1: the terminal contract. `quarry` or `qry` enters raw mode and the
+//! alternate screen, prints the size and the bytes of every key, and leaves the terminal
+//! as it found it on `q`, Ctrl-C, a kill or a crash.
+
+use std.fs
+use std.signal
+use tty
+
+fn say(line: str) {
+	var b = List[byte]()
+
+	for x in line.bytes() {
+		(mut b).push(x)
+	}
+
+	(mut b).push(13 as byte)
+	(mut b).push(10 as byte)
+
+	tty.write(b) else |_| {}
+}
+
+
+
 
 fn main() -> !int {
+	var t = tty.open() else |e| {
+		eprint("quarry: standard input and output must be a terminal ({e})")
+		return 1
+	}
 
+	tty.enter(mut t) else |_| {
+		eprint("quarry: the terminal refused raw mode")
+		return 1
+	}
+	
+	say("quarry: {t.cols}x{t.rows}. Press keys; q quits.")
+	var files = List[fs.File]()
+	(mut files).push(fs.stdin())
+
+	loop {
+		let w = tty.wait(files, -1) else |_| {
+			break
+		}
+
+		if w.meaning != 0 {
+			if w.meaning & signal.resize() != 0 {
+				tty.refresh_size(mut t)
+				say("reszied: {t.cols}x{t.rows}")
+				continue
+			}
+
+			break
+		}
+
+		if w.ready == 0 {
+			let bytes = tty.read(256) else |_| {
+				break
+			}
+
+			var line = ""
+			for b in bytes {
+				line += "{b as int} "
+			}
+
+			say(line)
+
+			if bytes.len == 1 && bytes[0] as int == 113 {
+				break
+			}
+
+			if bytes.len == 1 && bytes[0] as int == 33 {
+				// `!` crashes on purpose: an index past the end traps, and the
+				// registered restore still puts the terminal back
+				let empty = List[int]()
+				say("{empty[bytes.len + 4]}")
+			}
+		}
+	}
+
+	tty.leave(mut t)
 	0
 }

@@ -1,0 +1,219 @@
+//! tty:	the only module that touches the terminal.
+//! 	 	Raw mode, the alternate screen, the size,
+//!			one write per frame, and the wait.
+
+use std.env
+use std.fs
+use std.io as std_io
+use std.signal
+use std.term as std_term
+
+/// The terminal as quarry holds it
+pub struct Tty {
+	saved: std_term.Mode,
+	rows: int,
+	cols: int,
+	on: bool,
+}
+
+/// Why the terminal could not be opened.
+error OpenErrors = {not_tty, io}
+
+/// A read's rows: the end of input (a hang-up) or the host's failure.
+error ReadErrors = {eof, io}
+
+/// Enter the alternate screen, hide the cursor, clear.
+pub fn enter_bytes() -> str {
+	"\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J"
+}
+
+/// Reset attributes, show the cursor, leave the alternate screen.
+pub fn leave_bytes() -> str {
+	"\x1b[0m\x1b[?25h\x1b?1049l"
+}
+
+/// The signal meanings quarry listens for.
+pub fn signal_set() -> int {
+	signal.resize() | signal.interrupt() | signal.terminate() | signal.reload() | signal.quit()
+}
+
+fn bytes_of(s: str) -> List[byte] {
+	var out = List[byte]()
+
+	for b in s.bytes() {
+		(mut out).push(b)
+	}
+
+	out
+}
+
+/// Read the size, falling back to COLUMNS/LINES and then 80x24 when the
+/// terminal reports 0x0 (a serial console, or a pty nobody sized).
+fn read_size() -> (int, int) {
+	var rows = 0
+	var cols = 0
+
+	let s = std_term.size(fs.stdout()) else |_| {
+		std_term.Size { rows: 0, columns: 0 }
+	}
+
+	rows = s.rows
+	cols = s.columns
+
+	if rows <= 0 || cols <= 0 {
+		rows = (env.get("LINES") else "").to_int() else 24
+		cols = (env.get("COLUMNS") else "").to_int() else 80
+	}
+
+
+	(rows, cols)
+}
+
+/// Check that both standard streams are terminals and read the mode and
+/// size. Nothiung changes yet.
+pub fn open() -> Tty ! OpenErrors {
+	let in_tty = std_io.is_terminal(fs.stdin()) else false
+	let out_tty = std_io.is_terminal(fs.stdout()) else false
+
+	if !in_tty || !out_tty {
+		return not_tty
+	}
+
+	let saved = std_term.mode(fs.stdout()) else |_| {
+		return io
+	}
+
+	let (rows, cols) = read_size()
+	Tty { saved: saved, rows: rows, cols: cols, on: false }
+}
+
+/// Register the restore FIRST, listen for signals, then go raw and enter
+/// the alternate screen.
+pub fn enter(mut t: Tty) -> () ! {io} {
+	let tout = fs.stdout()
+
+	std_term.restore_at_exit(tout, t.saved, bytes_of(leave_bytes())) else |_| {
+		return io
+	}
+
+	var raw = std_term.raw_bytes(t.saved)
+	raw.signals = true
+
+	std_term.set_mode(tout, raw) else |_| {
+		return io
+	}
+
+	t.on = true
+	write(bytes_of(enter_bytes()))?
+}
+
+/// Undo `enter`: the leave bytes, the saved mode. Safe to call twice.
+pub fn leave(mut t: Tty) {
+	if !t.on {
+		return
+	}
+
+	let tout = fs.stdout()
+	write(bytes_of(leave_bytes())) else |_| {}
+	std_term.set_mode(tout, t.saved) else |_| {}
+	std_term.restore_at_exit(tout, t.saved, List[byte]()) else |_| {}
+
+	t.on = false
+}
+
+/// Re-read the size; true when it changed.
+pub fn refresh_size(mut t: Tty) -> bool {
+	let (rows, cols) = read_size()
+
+	if rows == t.rows && cols == t.cols {
+		return false
+	}
+
+	t.rows = rows
+	t.cols = cols
+	true
+}
+
+/// Write bytes to the terminal in one call.
+pub fn write(bytes: List[byte]) -> () ! {io} {
+	var tout = fs.stdout()
+
+	fs.write_chunk(mut tout, bytes) else |_| {
+		return io
+	}
+}
+
+/// Read what standard input has (call only after a wait said it is ready).
+pub fn read(max: int) -> List[byte] ! ReadErrors {
+	var tin = fs.stdin()
+	
+	fs.read_chunk(mut tin, max)?
+}
+
+/// Wait up to `ms` milliseconds (-1: forever) for input on one of
+/// `files` or a meaning in `signal_set()`. std's `wait fds` copies the
+/// handles into a fresh list on every call; the region hands that list
+/// back at once, so a loop that waits a million times stays flat.
+pub fn wait(files: List[fs.File], ms: int) -> signal.Wake ! {io} {
+	var meaning = 0
+	var ready = -1
+	var failed = false
+
+	region scratch {
+		let w = signal.wait_fds(files, signal_set(), ms) else |_| {
+			failed = true
+			signal.Wake { meaning: 0, ready: -1 }
+		}
+
+		meaning = w.meaning
+		ready = w.ready
+	}
+	
+	if failed {
+		return io
+	}
+
+	signal.Wake { meaning: meaning, ready: ready }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
