@@ -1,2 +1,129 @@
 //! member: false
+//! The key decoder, without a terminal: bytes in, keys out.
 
+use keys
+
+fn decode(bytes: List[int], now_ms: int) -> List[keys.Key] {
+	var d = keys.new()
+	var b = List[byte]()
+
+	for x in bytes {
+		(mut b).push(x as byte)
+	}
+
+	keys.feed(mut d, b)
+	var out = List[keys.Key]()
+	var k = keys.Key { code: 0, mods: 0 }
+	while keys.next(mut d, now_ms, mut k) {
+		(mut out).push(copy k)
+	}
+
+	out
+}
+
+fn one(bytes: List[int]) -> keys.Key {
+	let ks = decode(bytes, 0)
+	assert(ks.len == 1, "exactly one key from {bytes}, for {ks.len}")
+
+	ks[0]
+}
+
+fn test_arrows_andletters() {
+	assert(one([27, 91, 65]).code == keys.K_UP)
+	assert(one([27, 91, 68]).code == keys.K_LEFT)
+	assert(one([113]).code == 113)
+}
+
+fn test_ctrl_right_xterm() {
+	let k = one([27, 91, 49, 59, 53, 67])
+	assert(k.code == keys.K_RIGHT)
+	assert(k.mods == keys.MOD_CTRL)
+}
+
+fn test_tilde_keys() {
+	assert(one([27, 91, 53, 126]).code == keys.K_PGUP)
+	assert(one([27, 91, 54, 126]).code == keys.K_PGDN)
+	assert(one([27, 91, 51, 126]).code == keys.K_DEL)
+	assert(one([27, 91, 49, 53, 126]).code == keys.K_F0 + 5)
+	assert(one([27, 91, 49, 55, 126]).code == keys.K_F0 + 6)
+	assert(one([27, 91, 50, 52, 126]).code == keys.K_F0 + 12)
+}
+
+fn test_pax_function_keys() {
+	// PAX's console: F1..F5 are ESSC [ [ A..E.
+	assert(one([27, 91, 91, 65]).code == keys.K_F0 + 1)
+	assert(one([27, 91, 91, 69]).code == keys.K_F0 + 5)
+}
+
+fn test_xterm_ss3_function_keys() {
+	assert(one([27, 79, 80]).code == keys.K_F0 + 1)
+	assert(one([27, 79, 83]).code == keys.K_F0 + 4)
+}
+
+fn test_split_sequence() {
+	var d = keys.new()
+	var k = keys.Key { code: 0, mods: 0 }
+	var first = List[byte]()
+
+	(mut first).push(27 as byte)
+	(mut first).push(91 as byte)
+	keys.feed(mut d, first)
+
+	assert(!keys.next(mut d, 0, mut k), "half a sequence is not a key")
+
+	var rest = List[byte]()
+	(mut rest).push(65 as byte)
+	keys.feed(mut d, rest)
+
+	assert(keys.next(mut d, 1, mut k))
+	assert(k.code == keys.K_UP)
+}
+
+fn test_lone_escape_waits_for_its_deadline() {
+	var d = keys.new()
+	var k = keys.Key { code: 0, mods: 0 }
+	var esc = List[byte]()
+
+	(mut esc).push(27 as byte)
+	keys.feed(mut d, esc)
+
+	assert(!keys.next(mut d, 1000, mut k), "a lone ESC waits")
+	assert(keys.deadline(d) == 1000 + keys.ESC_TIMEOUT_MS)
+	assert(!keys.next(mut d, 1010, mut k), "still inside the deadline")
+	assert(keys.next(mut d, 1030, mut k), "past it: Escape")
+	assert(k.code == keys.K_ESC)
+}
+
+fn test_alt_letter() {
+	let k = one([27, 120])
+	assert(k.code == 120)
+	assert(k.mods == keys.MOD_ALT)
+}
+
+fn test_controls_and_utf8() {
+	assert(one([13]).code == keys.K_ENTER)
+	assert(one([9]).code == keys.K_TAB)
+	assert(one([127]).code == keys.K_BACKSPACE)
+
+	let c = one([18])
+	assert(c.code == 114 && c.mods == keys.MOD_CTRL, "Ctrl+R")
+	assert(one([195, 169]).code == 233)
+}
+
+fn test_a_burst_of_fifty_arrows() {
+	var bytes = List[int]()
+
+	for _ in 0..50 {
+		(mut bytes).push(27)
+		(mut bytes).push(91)
+		(mut bytes).push(66)		
+	}
+
+	assert(decode(bytes, 0).len == 50)
+}
+
+fn test_names() {
+	assert(keys.name(keys.Key { code: keys.K_RIGHT, mods: keys.MOD_CTRL }) == "Ctrl+Right")
+	assert(keys.name(keys.Key { code: keys.K_F0 + 5, mods: 0 }) == "F5")
+	assert(keys.name(keys.Key { code: 120, mods: keys.MOD_ALT }) == "Alt+'x'")
+}
