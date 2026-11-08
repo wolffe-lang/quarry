@@ -9,6 +9,12 @@ pub const NONE: int = 0
 /// A yes/no question: `y` answers yes, any other key no.
 pub const CONFIRM: int = 1
 
+/// A line of text to edit
+pub const INPUT: int = 2
+
+/// `key`'s answer: the dialog is still open.
+pub const OPEN: int = 0
+
 /// `keys`'s answer: accepted (Enter, or `y` to a question).
 pub const ACCEPT: int = 1
 
