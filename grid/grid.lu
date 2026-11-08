@@ -168,7 +168,7 @@ pub fn puts(
 		}
 
 		var cp = ch as int
-		if cp < 32 || cp == 127 || cp >= 128 && cp <= 160 {
+		if cp < 32 || cp == 127 || cp >= 128 && cp < 160 {
 			cp = 63
 		}
 
