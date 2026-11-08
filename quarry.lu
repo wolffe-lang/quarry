@@ -21,7 +21,7 @@ const DRAIN_MAX: int = 262144
 const POLL_MS: int = 1000
 
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " F6 Rename  F7 Mkdir  F8 Delete  Space Mark  ^R Reload  q Quit"
+const KEYBAR: str = " F6 Rename  F7 Mkdir  F8 Delete  Space Mark  Tab Pane  ^R Reload  q Quit"
 
 /// What a dialog's yes does: rename the entry under the cursor.
 const ACT_MKDIR: int = 1
@@ -88,7 +88,7 @@ fn paint(mut a: App) {
 		ui.draw(mut a.back, a.look, a.panes[0], a.panes[1], a.active, a.home, status, KEYBAR)
 
 		if a.dlg.kind != dialog.NONE {
-			ui.draw(dialog(mut a.back, a.look, a.dlg))
+			ui.draw_dialog(mut a.back, a.look, a.dlg)
 		}
 		
 		let _ = grid.render(a.front, a.back, mut a.out)	
@@ -306,6 +306,10 @@ fn rename(mut a: App, name: str) {
 
 	// move_file replaces what is there, quarry never does that silently
 	if present(to) {
+		say(mut a, "{name} already exists")
+		return
+	}
+	fs.move_file(from, to) else |e| {
 		say(mut a, "cannot rename: {e}")
 		return
 	}
@@ -335,6 +339,11 @@ fn delete(mut a: App) {
 		// lstat: a link to a directory is removed as a link, never followed.
 		if info.kind == pane.KIND_DIR {
 			fs.remove_dir_all(path) else |_| {
+				failed += 1
+				continue
+			}
+		} else {
+			fs.remove(path) else |_| {
 				failed += 1
 				continue
 			}
@@ -489,15 +498,15 @@ fn run(mut a: App) {
 			resized(mut a)
 		}
 
-		if meaning & !(signal.resize() | signal.suspend()) != 0 {
-			break
-		}
-
 		// Ctrl-C closes an open dialog instead of quitting.
 		if meaning & signal.interrupt() != 0 && a.dlg.kind != dialog.NONE {
 			dialog.close(mut a.dlg)
 			meaning = meaning & !signal.interrupt()
 			a.dirty = true
+		}
+
+		if meaning & !(signal.resize() | signal.suspend()) != 0 {
+			break
 		}
 
 		poll_disk(mut a)
