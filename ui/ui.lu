@@ -76,7 +76,7 @@ pub fn head(s: str, n: int) -> str {
 }
 
 /// The last `n` code points of `s`
-pub fn tail(s: str, : int) -> str {
+pub fn tail(s: str, n: int) -> str {
 	let total = cells(s)
 
 	if n >= total {
@@ -130,7 +130,7 @@ fn is_exec(e: pane.Entry) -> bool {
 /// mark `ls -F` puts after it.
 fn style(look: grid.Look, e: pane.Entry) -> (int, int, str) {
 	if e.marked {
-		return (coll(look, YELLOW + 8), grid.ATTR_BOLD, if e.to_dir then "/" else "")
+		return (col(look, YELLOW + 8), grid.ATTR_BOLD, if e.to_dir then "/" else "")
 	}
 
 	if e.kind == pane.KIND_LINK {
@@ -144,6 +144,8 @@ fn style(look: grid.Look, e: pane.Entry) -> (int, int, str) {
 	if is_exec(e) {
 		return (col(look, GREEN + 8), 0, "*")
 	}
+
+	(grid.DEFAULT, 0, "")
 }
 
 /// What the size column says for an entry.
@@ -176,7 +178,7 @@ fn draw_pane(
 		title, 
 		edge,
 		grid.DEFAULT,
-		if active then grid.ATTR_REVERSE else grid.ATTR_BOLS, 
+		if active then grid.ATTR_REVERSE else grid.ATTR_BOLD,
 	)
 	let inner = width - 2
 	let size_w = 6
