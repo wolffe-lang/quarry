@@ -1,6 +1,8 @@
 //! dialog: a yes/no question and a one-line editor, as data. A dialog
 //! takes keys and says when it is finished; quarry decided what happens then
 
+use keys
+
 /// No dialog is open
 pub const NONE: int = 0
 
@@ -98,7 +100,7 @@ fn remove_at(mut d: Dialog, i: int) {
 pub fn key(mut d: Dialog, k: keys.Key) -> int {
 	let c = k.code
 
-	if d.kind = CONFIRM {
+	if d.kind == CONFIRM {
 		return if (c == 121 || c == 89) && k.mods & keys.MOD_CTRL == 0 then ACCEPT else CANCEL
 	}
 
@@ -169,7 +171,8 @@ pub fn slice(d: Dialog, from: int, to: int) -> str {
 	str_from_utf8(b) else ""
 }
 
-pub fn test_of(d: Dialog) -> str {
+/// The whole text.
+pub fn text_of(d: Dialog) -> str {
 	slice(d, 0, d.text.len)
 }
 
