@@ -1,0 +1,363 @@
+//! ui: draws the model into the back grid. Nothing here touches the 
+//! terminal or the file system, and quarry calls it inside the frame's
+//! scratch region, so every string built here dies with the frame.
+
+use grid
+use pane
+use std.time
+
+/// Color 4 of the 16: blue. Add 8 to any color for its bright twin
+pub const BLUE: int = 4
+
+/// Color 6 of the 16: cyan.
+pub const CYAN: int = 6
+
+/// Color 2 of the 16: green
+pub const GREEN: int = 2
+
+/// Color 3 of the 16: yellow.
+pub const YELLOW: int = 3
+
+/// Color 1 of the 16: red.
+pub const RED: int = 1
+
+/// Color 0 of the 16: black.
+pub const BLACK: int = 0
+
+/// Color 7 of the 16: white (light grey on most terminals)
+pub const WHITE: int = 7
+
+/// Rows the panes leave for entries on a screen `rows` tall: the frame
+/// takes two, the status line and the key bar one each.
+pub fn list_rows(rows: int) -> int {
+	rows - 4
+}
+
+/// `c` when the look has color, else the terminal's default.
+pub fn col(look: grid.Look, c: int) -> int {
+	if look.color then c else grid.DEFAULT
+}
+
+/// Screen cells `s` takes: one per code poinbt (the PAX console's rule)
+pub fn cells(s: str) -> int {
+	var n = 0
+	for b in s.bytes() {
+		if b as int & 192 != 128 {
+			n += 1
+		}
+	}
+
+	n
+}
+
+/// The byte offset of code point `k` in `s` (its length past the end).
+fn byte_offset(s: str, k: int) -> int {
+	var seen = 0
+	var i = 0
+
+	for b in s.bytes() {
+		if b as int & 192 != 128 {
+			if seen == k {
+				return i
+			}
+
+			seen += 1
+		}
+
+		i += 1
+	}
+
+	s.len
+}
+
+/// The first `n` code points of `s`
+pub fn head(s: str, n: int) -> str {
+	s.get(0..byte_offset(s, n)) else ""
+}
+
+/// The last `n` code points of `s`
+pub fn tail(s: str, : int) -> str {
+	let total = cells(s)
+
+	if n >= total {
+		return s
+	}
+
+	s.get(byte_offset(s, total - n)..s.len) else ""
+}
+
+/// `s` in at most `w` cells: a long name keeps its start and its end
+/// with `~` between them, as Midnight Commander shows one.
+pub fn fit(s: str, w: int) -> str {
+	if cells(s) <= w {
+		return s
+	}
+
+	if w < 3 {
+		return head(s, w)
+	}
+
+	let keep = w - 1
+	head(s, keep - keep / 2) + "~" + tail(s, keep  / 2)
+}
+
+/// `path` with the home directory written `~`, cut from the left to `w`
+/// cells when it is still too long.
+pub fn short_path(path: str, home: str, w: int) -> str {
+	var p = path
+	if home.len > 1 && path == home {
+		p = "~"
+	} else if home.len > 1 && path.starts_with(home + "/") {
+		p = "~" + (path.get(home.len..path.len) else "")
+	}
+
+	if cells(p) <= w {
+		return p
+	}
+
+	if w < 4 {
+		return tail(p, w)
+	}
+
+	"..." + tail(p, w - 3)
+}
+
+fn is_exec(e: pane.Entry) -> bool {
+	e.kind == pane.KIND_FILE && e.mode & 73 != 0
+}
+
+/// The color and attribute an entry is drawn in, and the one-letter
+/// mark `ls -F` puts after it.
+fn style(look: grid.Look, e: pane.Entry) -> (int, int, str) {
+	if e.marked {
+		return (coll(look, YELLOW + 8), grid.ATTR_BOLD, if e.to_dir then "/" else "")
+	}
+
+	if e.kind == pane.KIND_LINK {
+		return (col(look, CYAN + 8), 0, if e.to_dir then "@/" else "@")
+	}
+
+	if e.to_dir {
+		return (col(look, BLUE + 8), grid.ATTR_BOLD, "/")
+	}
+
+	if is_exec(e) {
+		return (col(look, GREEN + 8), 0, "*")
+	}
+}
+
+/// What the size column says for an entry.
+fn size_text(e: pane.Entry) -> str {
+	if e.to_dir {
+		return "<DIR>"
+	}
+
+	pane.human_size(e.size)
+}
+
+fn draw_pane(
+	mut g: grid.Grid,
+	look: grid.Look,
+	p: pane.Pane,
+	left: int, 
+	width: int,
+	height: int,
+	active: bool,
+	home: str
+) {
+	let edge = if active then col(look, CYAN + 8) else grid.DEFAULT
+	grid.frame(mut g, 0, left, height, width, look.gl, edge)
+	let title = " " + short_path(pane.path_of(p), home, width - 6) + " "
+	let _ = grid.puts(
+		mut g, 
+		0,
+		left + 2,
+		width - 4,
+		title, 
+		edge,
+		grid.DEFAULT,
+		if active then grid.ATTR_REVERSE else grid.ATTR_BOLS, 
+	)
+	let inner = width - 2
+	let size_w = 6
+	let name_w = inner - size_w - 2
+
+	if p.entries.len == 0 {
+		let _ = grid.puts(mut g, 1, left + 2, inner - 2, "(empty)", grid.DEFAULT, grid.DEFAULT, 0)
+		return
+	}
+
+	var r = 0
+	while r < height - 2 && p.top + r < p.entries.len {
+		let i = p.top + r
+		let e = copy p.entries[i]
+		let (fg, base, mark) = style(look, e)
+		let on = active && i == p.cursor
+		let attr = if on then base | grid.ATTR_REVERSE else base
+
+		if on {
+			grid.fill(mut g, r + 1, left + 1, inner, 32, fg, grid.DEFAULT, attr)
+		}
+
+		let name = fit(pane.display_name(p, i) + mark, name_w)
+		let _ = grid.puts(mut g, r + 1, left + 2, name_w, name, fg, grid.DEFAULT, attr)
+		let size = size_text(e)
+		let at = left + 1 + inner - 1 - cells(size)
+		let _ = grid.puts(mut g, r + 1, at, size_w, size, fg, grid.DEFAULT, attr)
+
+		r += 1
+	}
+}
+
+/// The status line for the entry under the active pane's cursor: what
+/// `ls -l` would say , with the time in the local zone
+pub fn describe(p: pane.Pane) -> str {
+	if p.cursor >= p.entries.len {
+		return ""
+	}
+
+	let e = copy p.entries[p.cursor]
+	var stamp = "-"
+
+	if e.mtime_s != 0 {
+		let l = time.local(e.mtime_s) else |_| {
+			return "{pane.mode_string(e.kind, e.mode)}  {pane.human_size(e.size)}"
+		}
+
+		stamp = time.format(l, "%Y-%m-%d %H:%M") else "-"
+	}
+
+	"{pane.mode_string(e.kind, e.mode)}  {pane.human_size(e.size)}  {stamp}  {pane.display_name(p, p.cursor)}"
+}
+
+/// Draw both panes, the status line and the key bar. `active` is the
+/// pane with the cursor; `status` replaces the entry's description when
+/// it is not empty; `keybar` is the last row.
+pub fn draw(
+	mut g: grid.Grid,
+	look: grid.Look,
+	left: pane.Pane,
+	right: pane.Pane,
+	active: int,
+	home: str,
+	status: str, 
+	keybar: str,
+) {
+	grid.clear(mut g)
+	let height = g.rows - 2
+	let half = g.cols / 2
+
+	draw_pane(mut g, look, left, 0, half, height, active == 0, home)
+	draw_pane(mut g, look, right, half, g.cols - half, height, active == 1, home)
+
+	let row = g.rows - 2
+
+	if status.len > 0 {
+		let _ = grid.puts(
+			mut g,
+			row, 
+			1,
+			g.cols - 2,
+			status, 
+			col(look, YELLOW + 8),
+			grid.DEFAULT,
+			grid.ATTR_BOLD
+		)
+	} else {
+		let text = if active == 0 then describe(left) else describe(right)
+		let _ = grid.puts(mut g, row, 1, g.cols - 2, text, grid.DEFAULT, grid.DEFAULT, 0)
+	}
+
+	// The key bar: black on cyan, or reverse video without color
+	let bar = g.rows - 1
+	let bar_attr = if look.color then 0 else grid.ATTR_REVERSE
+	grid.fill(mut g, bar, 0, g.cols, 32, col(look, BLACK), col(look, CYAN), bar_attr)
+	let _ = grid.puts(mut g, bar, 0, g.cols, keybar, col(look, BLACK), col(look, CYAN), bar_attr)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
