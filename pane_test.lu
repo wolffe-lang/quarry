@@ -237,4 +237,37 @@ fn test_recover_walks_up_to_a_directory_that_exists() {
 	assert(landed == base + "/a", "landed on {landed}")
 }
 
+fn test_marks_survive_a_reload_pick_the_targets() {
+	tree("pt-marks.tmp")
+	var p = pane.new("pt-marks.tmp")
 
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	let none_marked = pane.targets(p)
+	p.cursor = 2
+
+	pane.toggle_mark(mut p)
+	p.cursor = 3
+	pane.toggle_mark(mut p)
+
+	fs.write_text("pt-marks.tmp/aaa", "a") else |_| {}
+
+	pane.load(mut p) else |_| {
+		assert(false, "reload failed")
+	}
+
+	let t = pane.targets(p)
+	let first = pane.display_name(p, t[0])
+	let second = pane.display_name(p, t[1])
+	let found = pane.cursor_to(mut p, "zeta.txt")
+	let missing = pane.cursor_to(mut p, "nope")
+
+	fs.remove_dir_all("pt-marks.tmp") else |_| {}
+
+	assert(none_marked.len == 1 && none_marked[0] == 0, "nothing marked: the cursor")
+	assert(t.len == 2 && first == "apple" && second == "Banana", "marks kept: {first} {second}")
+	assert(found && pane.display_name(p, p.cursor) == "zeta.txt", "select")
+	assert(!missing, "select of a missing name")
+}
