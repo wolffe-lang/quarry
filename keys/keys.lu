@@ -1,0 +1,96 @@
+//! keys: bytes from the terminal in, keys out. No I/O, so every case is
+//! a test. Characters are their Unicode scalar; named keys live one past
+//! Unicaode, at KEY_BASE and up.
+
+/// The first named key: one past the last Unicode scalar.
+pub const KEY_BASE: int = 1114112
+
+/// Up arrow
+pub const K_UP: int = 1114113
+
+/// Down arrow.
+pub const K_DOWN: int = 1114114
+
+/// Left arrow.
+pub const K_LEFT: int = 1114115
+
+/// Right arrow.
+pub const K_RIGHT: int = 1114116
+
+/// Home.
+pub const K_HOME: int = 1114117
+
+/// End. 
+pub const K_END: int = 1114118
+
+/// Page Up.
+pub const K_PGUP: int = 1114119
+
+/// Page Down.
+pub const K_PGDN: int = 1114120
+
+/// Insert.
+pub const K_INS: int = 1114121
+
+/// Delete.
+pub const K_DEL: int = 1114122
+
+/// Escape, alone.
+pub const K_ESC: int = 1114123
+
+/// Enter (CR or LF).
+pub const K_ENTER: int = 1114124
+
+/// Tab.
+pub const K_TAB: int = 1114125
+
+/// Backspace (127; Ctrl+Backspace is 8).
+pub const K_BACKSPACE: int = 1114126
+
+/// A sequence quarry does not know.
+pub const K_UNKNOWN: int = 1114127
+
+/// F1 is K_F0 + 1, F12 is K_F0 + 12.
+pub const K_f0: int = 1114200
+
+/// Shift was held.
+pub const MOD_SHIFT: int = 1
+
+/// Alt was held (or the key came after a lone ESC).
+pub const MOD_ALT: int = 2
+
+/// Ctrl was held.
+pub const MOD_CTRL: int = 4
+
+/// How long a lone ESC waits for the rest of a sequence. PAX's clock
+/// ticks every 10 ms, so never go below one tick.
+pub const ESC_TIMEOUT_MS: int = 25
+
+/// One key: a scalar or a named key, and the modifiers held.
+pub struct Key {
+	code: int,
+	mods: int,
+}
+
+/// The decoder: bytes not yet turned into keys, and the deadline for a
+/// lone ESC (-1: none armed).
+pub struct Decoder {
+	pending: List[byte],
+	esc_deadline_ms: int,
+}
+
+/// An empty decoder.
+pub fn new() -> Decoder {
+	Decoder { pending: List[byte](), esc_deadline_ms: -1 }
+}
+
+
+
+
+
+
+
+
+
+
+
