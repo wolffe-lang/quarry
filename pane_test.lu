@@ -189,3 +189,52 @@ fn test_mode_strings() {
 	assert(pane.mode_string(0, 2464) == "-rwSr-----", "setuid, no x")
 }
 
+fn test_changed_sees_a_new_name_and_a_vanished_directory() {
+	tree("pt-changed.tmp")
+
+	var p = pane.new("pt-changed.tmp")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	let quiet = pane.changed(p)
+
+	// A directory's time moves when a name is added. Wait out a coarse
+	// clock by setting the time explicitly instead of sleeping
+	fs.write_text("pt-changed.tmp", "n") else |_| {}
+	fs.set_times("pt-changed.tmp", fs.time_keep(), fs.time(p.seen_s + 5, 0)) else |_| {}
+
+	let moved = pane.changed(p)
+
+	fs.remove_dir_all("pt-changed.tmp") else |_| {}
+
+	let gone = pane.changed(p)
+
+	assert(quiet == 0, "nothing changed yet: {quiet}")
+	assert(moved == 1, "a new name: {moved}")
+	assert(gone == 2, "gone: {gone}")
+}
+
+fn test_recover_walks_up_to_a_directory_that_exists() {
+	fs.remove_dir_all("pt-recover.tmp") else |_| {}
+	fs.create_dir_all("pt-recover.tmp/a/b/c") else |_| {}
+
+	let base = fs.realpath("pt-recover.tmp") else ""
+	var p = pane.new(base + "/a/b/c")
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	fs.remove_dir_all("pt-recover.tmp/a/b") else |_| {}
+
+	let ok = pane.recover(mut p)
+	let landed = pane.path_of(p)
+
+	fs.remove_dir_all("pt-recover.tmp") else |_| {}
+	assert(ok, "recovered")
+	assert(landed == base + "/a", "landed on {landed}")
+}
+
+
