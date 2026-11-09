@@ -1,0 +1,149 @@
+//! member: false
+//! nav's tests: a scratch tree under the working directory, made and
+//! removed by each test, with two panes on it as quarry holds them.
+
+use nav
+use pane
+use std.fs
+
+fn tree(root: str) {
+	fs.remove_dir_all(root) else |_| {}
+	fs.create_dir_all("{root}/alpha/inner") else |_| {}
+	fs.write_text("{root}/alpha/a.txt", "a") else |_| {}
+	fs.create_dir_all("{root}/empty") else |_| {}
+	fs.write_text("{root}/notes.txt", "notes") else |_| {}
+	fs.symlink("nowhere", "{root}/dangling") else |_| {}
+}
+
+/// Two panes on `root`, the left one loaded, as quarry's main makes them.
+fn panes_on(root: str) -> List[pane.Pane] {
+	let path = fs.realpath(root) else root
+	var panes = List[pane.Pane]()
+	(mut panes).push(pane.new(path))
+	(mut panes).push(pane.new(path))
+	pane.load(mut panes[0]) else |_| {}
+
+	panes
+}
+
+fn names(p: pane.Pane) -> str {
+	var s = ""
+
+	var i = 0
+	while i < p.entries.len {
+		s += pane.display_name(p, i) + " "
+
+		i += 1
+	}
+
+	s
+}
+
+fn test_the_right_pane_lists_the_directory_under_the_cursor() {
+	tree("nt-list.tmp")
+	var panes = panes_on("nt-list.tmp")
+	var v = nav.start()
+
+	nav.follow(mut panes, mut v)
+
+	let left = names(panes[0])
+	let right = names(panes[1])
+	let at = pane.path_of(panes[1])
+
+	fs.remove_dir_all("nt-list.tmp") else |_| {}
+
+	assert(left == "alpha empty dangling notes.txt ", "left: {left}")
+	assert(v.shows == nav.SHOWS_LISTING, "shows {v.shows}")
+	assert(right == "inner a.txt ", "right: {right}")
+	assert(at.ends_with("/nt-list.tmp/alpha"), "right pane at {at}")
+}
+
+fn test_a_file_a_dangling_link_and_an_empty_directory() {
+	tree("nt-kinds.tmp")
+	var panes = panes_on("nt-kinds.tmp")
+	var v = nav.start()
+	panes[0].cursor = 3
+
+	nav.follow(mut panes, mut v)
+	let file = v.shows
+	let of = str_from_utf8(v.of) else ""
+	panes[0].cursor = 2
+
+	nav.follow(mut panes, mut v)
+	let dangling = v.shows
+	let why = str_from_utf8(v.why) else ""
+	panes[0].cursor = 1
+
+	nav.follow(mut panes, mut v)
+	let empty = v.shows
+	let rows = panes[1].entries.len
+	fs.remove_dir_all("nt-kinds.tmp") else |_| {}
+
+	assert(file == nav.SHOWS_FILE && of.ends_with("/notes.txt"), "a file: {file} {of}")
+	assert(dangling == nav.SHOWS_NOTHING, "a dangling link: {dangling}")
+	assert(why == "dangling points at nowhere, which is not there", "why: {why}")
+	assert(empty == nav.SHOWS_LISTING && rows == 0, "an empty directory is a listing")
+}
+
+fn test_a_listing_it_holds_is_kept_until_it_changes() {
+	tree("nt-keep.tmp")
+	var panes = panes_on("nt-keep.tmp")
+	var v = nav.start()
+
+	nav.follow(mut panes, mut v)
+	panes[1].cursor = 1
+
+	nav.follow(mut panes, mut v)
+	let kept = panes[1].cursor
+
+	// A directory's time moves when a name is added; set it explicitly
+	// so a coarse clock cannot hide the change.
+	fs.write_text("nt-keep.tmp/alpha/b.txt", "b") else |_| {}
+	fs.set_times("nt-keep.tmp/alpha", fs.time_keep(), fs.time(panes[1].seen_s + 5, 0)) else |_| {}
+
+	nav.follow(mut panes, mut v)
+	let right = names(panes[1])
+
+	fs.remove_dir_all("nt-keep.tmp") else |_| {}
+	assert(kept == 1, "the cursor stays where it was: {kept}")
+	assert(right == "inner a.txt b.txt ", "read again when it changed: {right}")
+}
+
+fn test_current_sees_the_left_cursor_move() {
+	tree("nt-current.tmp")
+	var panes = panes_on("nt-current.tmp")
+	var v = nav.start()
+	let before = nav.current(panes, v)
+
+	nav.follow(mut panes, mut v)
+	let made = nav.current(panes, v)
+	panes[0].cursor = 3
+	let moved = nav.current(panes, v)
+
+	fs.remove_dir_all("nt-current.tmp") else |_| {}
+
+	assert(!before && made && !moved, "{before} {made} {moved}")
+}
+
+fn test_a_directory_it_cannot_list() {
+	tree("nt-locked.tmp")
+	fs.create_dir_all("nt-locked.tmp/locked") else |_| {}
+	fs.set_mode("nt-locked.tmp/locked", 0) else |_| {}
+
+	var panes = panes_on("nt-locked.tmp")
+	var v = nav.start()
+	let _ = pane.cursor_to(mut panes[0], "locked")
+
+	nav.follow(mut panes, mut v)
+	let why = str_from_utf8(v.why) else ""
+
+	fs.set_mode("nt-locked.tmp", 493) else |_| {}
+	fs.remove_dir_all("nt-locked.tmp") else |_| {}
+
+	assert(v.shows == nav.SHOWS_NOTHING, "shows {v.shows}")
+	assert(why == "cannot list locked: denied", "why: {why}")
+}
+
+
+
+

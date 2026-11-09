@@ -271,3 +271,64 @@ fn test_marks_survive_a_reload_pick_the_targets() {
 	assert(found && pane.display_name(p, p.cursor) == "zeta.txt", "select")
 	assert(!missing, "select of a missing name")
 }
+
+fn test_open_starts_a_new_directory_unmarked_at_the_top() {
+	tree("pt-open.tmp")
+	fs.write_text("pt-open.tmp/beta/apple", "a") else |_| {}
+	let base = fs.realpath("pt-open.tmp") else ""
+	var p = pane.new(base)
+
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	p.cursor = 2
+	pane.toggle_mark(mut p)
+	pane.open(mut p, base + "/beta", "") else |_| {
+		assert(false, "open failed")
+	}
+
+	let inside = names(p)
+	let marked = p.entries.len == 1 && p.entries[0].marked
+	let top = p.cursor
+	var tag = "none"
+
+	pane.open(mut p, base + "/nope", "") else |e| {
+		tag = "{e}"
+	}
+
+	let stayed = pane.path_of(p)
+	pane.open(mut p, base, "zeta.txt") else |_| {
+		assert(false, "open with a name failed")
+	}
+
+	let on = pane.display_name(p, p.cursor)
+
+	fs.remove_dir_all("pt-open.tmp") else |_| {}
+
+	assert(inside == "apple ", "inside: {inside}")
+	assert(!marked, "a mark never follows its name into another directory")
+	assert(top == 0, "a new directory starts at the top: {top}")
+	assert(tag == "not_found" && stayed == base + "/beta", "a failed open stays: {tag} {stayed}")
+	assert(on == "zeta.txt", "the cursor on the name: {on}")
+}
+
+fn test_a_vanished_name_leaves_the_cursor_on_its_row() {
+	tree("pt-row.tmp")
+	var p = pane.new("pt-row.tmp")
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+
+	p.cursor = 3
+	fs.remove("pt-row.tmp/Banana") else |_| {}
+	pane.load(mut p) else |_| {
+		assert(false, "reload failed")
+	}
+
+	let last = pane.display_name(p, p.cursor)
+	fs.remove_dir_all("pt-row.tmp") else |_| {}
+
+	assert(next == "zeta.txt", "the row stats: {next}")
+	assert(last == "apple", "past the end, the last row: {last}")
+}
