@@ -288,10 +288,12 @@ fn add_entry(mut p: Pane, dir: str, raw: fs.Entry) {
 	(mut p.entries).push(e)
 }
 
-/// Load the pane's directory, putting the cursor on `keep` when it is there.
-/// Marked names stay marked. Answers 0, or 1 not_found, 2 denied, 
-/// 3 io; on failure the old listing is untouched.
-fn load_keeping(mut p: Pane, keep: List[byte]) -> int {
+/// Load the pane's directory, putting the cursor on `keep` when it is
+/// there. `same` says it is the directory the pane already lists: then
+/// marked names stay marked, and a cursor whose name vanished stays on
+/// its row. A new directory starts unmarked, at the top. Answers 0, or 1
+/// not_found, 2 denied, 3 io; on failure the old listing is untouched.
+fn load_keeping(mut p: Pane, keep: List[byte], same: bool) -> int {
 	var failed = 0
 	region scratch {
 		let dir = path_of(p)
@@ -315,9 +317,9 @@ fn load_keeping(mut p: Pane, keep: List[byte]) -> int {
 			p.seen_ns = d.mtime_ns
 
 			var marked = List[List[byte]]()
-			var i = 0
 
-			while i < p.entries.len {
+			var i = 0
+			while same && i < p.entries.len {
 				if p.entries[i].marked {
 					(mut marked).push(name_bytes(p, i))
 				}
@@ -329,7 +331,8 @@ fn load_keeping(mut p: Pane, keep: List[byte]) -> int {
 			(mut p.entries).reset()
 
 			for r in raw {
-				let hidden = r.name.len > 0 && r.name[0] as int == 46
+				let hidden = r.name.len > 0 && r.name[0] as int == 46 
+
 				if p.show_hidden || !hidden {
 					add_entry(mut p, dir, r)
 				}
@@ -345,10 +348,23 @@ fn load_keeping(mut p: Pane, keep: List[byte]) -> int {
 			}
 
 			let at = find(p, keep)
-			p.cursor = if at < 0 then 0 else at
+			if at >= 0 {
+				p.cursor = at
+			} else if !same {
+				p.cursor = 0
+			}
+
+			// A name that vanished leaves the cursor on its row, or on
+			// the last row when its row is gone too
+			if p.cursor >= p.entries.len {
+				p.cursor = p.entries.len - 1
+			}
+			if p. cursor < 0 {
+				p.cursor = 0
+			}
 		}
 	}
-	
+
 	failed
 }
 
@@ -370,7 +386,7 @@ pub fn load(mut p: Pane) -> () ! LoadErrors {
 	var code = 0
 	region scratch {
 		let keep = if p.cursor < p.entries.len then name_bytes(p, p.cursor) else List[byte]()
-		code = load_keeping(mut p, keep)
+		code = load_keeping(mut p, keep, true)
 	}
 
 	row_of(code)?
@@ -393,7 +409,7 @@ pub fn enter(mut p: Pane) -> bool ! LoadErrors {
 		if child.len > 0 {
 			set_path(mut p, child)
 
-			code = load_keeping(mut p, List[byte]())
+			code = load_keeping(mut p, List[byte](), false)
 			if code != 0 { 
 				(mut p.path).reset()
 				for b in old {
@@ -431,7 +447,7 @@ pub fn up(mut p: Pane) -> () ! LoadErrors {
 			}
 
 			set_path(mut p, parent)
-			code = load_keeping(mut p, keep)
+			code = load_keeping(mut p, keep, false)
 
 			if code != 0 {
 				set_path(mut p, here)
@@ -612,7 +628,7 @@ pub fn recover(mut p: Pane) -> bool {
 			let parent = fs.parent(here) else "/"
 			set_path(mut p, parent)
 
-			if load_keeping(mut p, List[byte]()) == 0 {
+			if load_keeping(mut p, List[byte](), false) == 0 {
 				ok = true
 				break
 			}
@@ -688,4 +704,35 @@ pub fn clear_marks(mut p: Pane) {
 
 		i += 1
 	}
+}
+
+/// Point the pane at `path` and read it, with the cursor on the entry
+/// named `keep`, or on the first. On a failed load the pane keeps its
+/// old path and its old listing
+pub fn open(mut p: Pane, path: str, keep: str) -> () ! LoadErrors {
+	var code = 0
+
+	region scratch {
+		let old = p.path[0..p.path.len]
+		var name = List[byte]()
+
+		for b in keep.bytes() {
+			(mut name).push(b)
+		}
+
+		set_path(mut p, path)
+		code = load_keeping(mut p, name, false)
+
+		if code != 0 {
+			(mut p.path).reset()
+
+			for b in old {
+				(mut p.path).push(b)
+			}
+		} else {
+			p.top = 0
+		}
+	}
+
+	row_of(code)?
 }
