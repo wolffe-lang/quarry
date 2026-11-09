@@ -1,0 +1,164 @@
+//! nav: the two panes as a window, two columns wide, on the path from
+//! `/` to where you are. The right pane is always what is under the left
+//! pane's cursor: a directory's listing, a file, or the reason there is 
+//! nothing to show
+
+use pane
+use std.fs
+
+/// The right pane is a listing: the directory under the left cursor.
+pub const SHOWS_LISTING: int = 0
+
+/// The right pane is the file under the left cursor.
+pub const SHOWS_FILE: int = 1
+
+/// The right pane has nothing to show. `why` says why; it is empty when
+/// the left pane is.
+pub const SHOWS_NOTHING: int = 2
+
+/// Under the cursor: nothing, because its pane is empty
+pub const ITEM_NONE: int = 0
+
+/// Under the cursor: a directory, or a link to one.
+pub const ITEM_DIR: int = 1
+
+/// Under the cursor: anything else that is there. A file, a fifo, a
+/// device, or a link to one of those.
+pub const ITEM_FILE: int = 2
+
+/// Under the cursor: a link whose target is not there.
+pub const ITEM_DANGLING: int = 3
+
+/// Under the cursor: a name that is not UTF-8, which std cannot reach.
+pub const ITEM_ODD: int = 4
+
+/// What the right pane shows. `left` is which of quarry's two panes is
+/// drawn on the left; `of` is the path of the item the view was made
+/// for, so quarry can tell when the left cursor has moved off it.
+pub struct View {
+	left: int,
+	shows: int,
+	of: List[byte],
+	why: List[byte],
+}
+
+/// No view yet, with pane 0 on the left
+pub fn start() -> View {
+	View { left: 0, shows: SHOWS_NOTHING, of: List[byte](), why: List[byte]() }
+}
+
+fn set(mut b: List[byte], text: str) {
+	(mut b).reset()
+
+	for x in text.bytes() {
+		(mut b).push(x)
+	}
+}
+
+/// The path of the item under `p`'s cursor, or "" when there is none or
+/// its name is not UTF-8.
+pub fn item_path(p: pane.Pane) -> str {
+	if p.cursor < 0 || p.cursor >= p.entries.len {
+		return ""
+	}
+
+	pane.child_path(p, p.cursor) else ""
+}
+
+/// What is under `p`'s cursor: one of the ITEM kinds.
+pub fn under(p: pane.Pane) -> int {
+	if p.cursor < 0 || p.cursor >= p.entries.len {
+		return ITEM_NONE
+	}
+
+	let e = copy p.entries[p.cursor]
+
+	if !e.utf8 {
+		return ITEM_ODD
+	}
+
+	if e.to_dir {
+		return ITEM_DIR
+	}
+
+	if e.kind == pane.KIND_LINK {
+		// stat follows the link: a target that is not there is dangling
+		let _ = fs.stat(item_path(p)) else |_| {
+			return ITEM_DANGLING
+		}
+	}
+
+	ITEM_FILE
+}
+
+/// Whether the view was made for the item under the left cursor.
+pub fn current(panes: List[pane.Pane], v: View) -> bool {
+	item_path(panes[v.left]) == (str_from_utf8(v.of) else "")
+}
+
+/// Make the right pane the view of the item under the left cursor. A
+/// listing the right pane already holds, unchanged on disk, is kept as
+/// it is, cursor and all; any other directory is read.
+pub fn follow(mut panes: List[pane.Pane], mut v: View) {
+	let l = v.left
+	let r = 1 - l
+	let path = item_path(panes[l])
+	let kind = under(panes[l])
+
+	set(mut v.of, path)
+	(mut v.why).reset()
+
+	if kind == ITEM_DIR {
+		let kept = v.shows == SHOWS_LISTING && pane.path_of(panes[r]) == path
+		if kept && pane.changed(panes[r]) == 0 {
+			return
+		}
+
+		pane.open(mut panes[r], path, "") else |e| {
+			v.shows = SHOWS_NOTHING
+			set(mut v.why, "cannot list {pane.display_name(panes[l], panes[l].cursor)}: {e}")
+			return
+		}
+
+		v.shows = SHOWS_LISTING
+
+		return
+	}
+
+	if kind == ITEM_FILE {
+		v.shows = SHOWS_FILE
+		return
+	}
+
+	v.shows = SHOWS_NOTHING
+
+	if kind == ITEM_DANGLING {
+		let target = str_from_utf8(fs.read_link(path) else List[byte]()) else "?"
+
+		set (
+			mut v.why,
+			"{pane.display_name(panes[l], panes[l].cursor)} points at {target}, which is not there",
+		)
+	} else if kind == ITEM_ODD {
+		set(mut v.why, "quarry cannot reach a name that is not UTF-8")
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
