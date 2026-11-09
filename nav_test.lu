@@ -137,7 +137,7 @@ fn test_a_directory_it_cannot_list() {
 	nav.follow(mut panes, mut v)
 	let why = str_from_utf8(v.why) else ""
 
-	fs.set_mode("nt-locked.tmp", 493) else |_| {}
+	fs.set_mode("nt-locked.tmp/locked", 493) else |_| {}
 	fs.remove_dir_all("nt-locked.tmp") else |_| {}
 
 	assert(v.shows == nav.SHOWS_NOTHING, "shows {v.shows}")
