@@ -32,6 +32,14 @@ pub const ITEM_DANGLING: int = 3
 /// Under the cursor: a name that is not UTF-8, which std cannot reach.
 pub const ITEM_ODD: int = 4
 
+/// Why Right did not move: what is under the cursor, or why the
+/// directory it would go into could not be listed
+pub error RightErrors {file, dangling, utf8, not_found, denied, io}
+
+/// Why Left did not move: the left pane is at `/`, or its parent could
+/// not be listed.
+pub error LeftErrors = {top, not_found, denied, io}
+
 /// What the right pane shows. `left` is which of quarry's two panes is
 /// drawn on the left; `of` is the path of the item the view was made
 /// for, so quarry can tell when the left cursor has moved off it.
@@ -144,16 +152,72 @@ pub fn follow(mut panes: List[pane.Pane], mut v: View) {
 	}
 }
 
+/// Nothing to refuse for a directory, or for an empty pane; the row for
+/// anything an arrow cannot go into.
+fn refuse(kind: int ) {
+	if kind == ITEM_FILE {
+		return file
+	}
+	
+	if kind == ITEM_DANGLING {
+		return dangling
+	}
 
+	if kind == ITEM_ODD {
+		return utf8
+	}
+}
 
+/// Right. In the left pane, on a directory: into the right pane, whose
+/// listing is already showing. In the right pane, on a directory: slide
+/// left, so the right pane's listing moves to the left and the directory 
+/// under the cursor fillsa the right; the cursor stays in the right pane.
+/// In the right pane, on a file: peek, the same slide with the cursor
+/// left on the file, now in the left pane, and the file's view on the
+/// right. Answers the pane that has the cursor.
+pub fn go_right(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! RightErrors {
+	let l = v.left
+	let r = 1 - l
+	let kind = under(panes[active])
 
+	if active == r && kind == ITEM_FILE {
+		v.left = r
+		follow(mut panes, mut v)
+		return r
+	}
 
+	refuse(kind)?
 
+	if kind == ITEM_NONE {
+		return active
+	}
 
+	let path = item_path(panes[active])
 
+	if active == l {
+		// The view may be be a moment behind a moving cursor: catch it up.
+		if !current(panes, v) || v.shows != SHOWS_LISTING {
+			pane.open(mut panes[r], path, "")?
+			v.shows = SHOWS_LISTING
+			set(mut v.of, path)
 
+			(mut v.why).reset()
+		}
 
+		return r
+	}
 
+	// The slide: the directory is read into the left pane's buffers, and
+	// the two panes trade side.
+	pane.open(mut panes[l], path, "")
+	v.left = r
+	v.shows = SHOWS_LISTING
+
+	set(mut v.of, path)
+	(mut v.why).reset()
+
+	l
+}
 
 
 
