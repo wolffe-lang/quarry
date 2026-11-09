@@ -3,6 +3,7 @@
 //! `pane.Pane`s and which one is active; `ui.draw` turns it into
 //! a frame; keys move the cursor, switch panes and walk the tree
 
+use std.process
 use worker
 use job
 use dialog
@@ -173,7 +174,101 @@ fn drain(mut a: App, files: List[fs.File]) -> int {
 	}
 }
 
-/// Enter the directory under the cursor.
+/// The editors quarry tries, in order: $VISUAL, $EDITOR, yew (PAX's), vi
+fn editors() -> List[str] {
+	var out = List[str]()
+	let visual = env.get("VISUAL") else ""
+	let editor = env.get("EDITOR") else ""
+
+	if visual != "" {
+		(mut out).push(visual)
+	}
+
+	if editor != "" {
+		(mut out).push(editor)
+	}
+
+	(mut out).push("yew")
+	(mut out).push("vi")
+
+	out
+}
+
+/// Give the terminal to an editor on `path`, wait, and take it back, in yew's order.
+fn hand_over(mut a: App, path: str) {
+	let keyboard = signal.interrupt() | signal.quit()
+
+	// 1. Stop hearing Ctrl-C and Ctrl-\: they belong to the child now.
+	signal.ignore(keyboard) else |_| {}
+
+	// 2. Give the terminal back: the main screen, the cursor, cooked mode.
+	tty.leave(mut a.t)
+
+	// 3. Start the child with OUR stdin (a child's is the null device
+	// 	  unless mapped) and those two signals back at their defaults.
+	var used = ""
+	var status = 0
+	for program in editors() {
+		var c = process.command(program)
+		process.push_arg(mut c, path)
+		process.set_stdin(mut c, fs.stdin())
+
+		var missing = false
+		var child = process.start_job(c, -1, keyboard) else |_| {
+			missing = true
+			process.Child { slot: -1 }
+		}
+		if missing {
+			continue	
+		}
+
+		// 4. Wait for it: the exit code, or -N for a death by signal N.
+		status = process.wait_status(take child) else -1
+		used = program
+		break
+	}
+
+	// 5. Take the terminal back: the restore, the signals, raw mode, the
+	// 	  alternate screen (enter's listen ends the ignore of step 1)/
+	tty.enter(mut a.t) else |_| {
+		a.running = false
+		return 
+	}
+
+	// 6. The size may have changed and the screen certainly did; the file
+	// 	  may have too.
+	resized(mut a)
+	reload(mut a, 0)
+	reload(mut a, 1)
+
+	if used == "" {
+		say(mut a, "no editor could be started: set EDITOR")
+	} else if status != 0 {
+		say(mut a, "{used} exited with {status}")
+	}
+}
+
+/// F4: edit the file under the cursor.
+fn edit_file(mut a: App) {
+	let i = a.active
+	if a.panes[i].cursor >= a.panes[i].entries.len {
+		return
+	}
+
+	if a.panes[i].entries[a.panes[i].cursor].to_dir {
+		say(mut a, "that is a directory: Enter opens it")
+		return
+	}
+
+	let path = pane.child_path(a.panes[i], a.panes[i].cursor) else |_| {
+		say(mut a, "quarry cannot reach a name that is not UTF-8")
+		return
+	}
+
+	hand_over(mut a, path)
+}
+
+/// Enter: go into a directory, or edit a file.
 fn open(mut a: App) {
 	let went = pane.enter(mut a.panes[a.active]) else |e| {
 		say(mut a, "cannot open that directory: {e}")
@@ -181,9 +276,10 @@ fn open(mut a: App) {
 	}
 
 	if !went {
-		say(mut a, "not a directory")
+		edit_file(mut a)
 	}
 }
+
 
 /// Go to the parent directory
 fn go_up(mut a: App) {
@@ -553,6 +649,8 @@ fn on_key(mut a: App, k: keys.Key) {
 		ask_rename(mut a)
 	} else if c == keys.K_F0 + 8 || c == keys.K_DEL {
 		ask_delete(mut a)
+	} else if c == keys.K_F0 + 4 || c == 101 && plain {
+		edit_file(mut a)
 	} else if c == keys.K_F0 + 5 {
 		start_copy(mut a)
 	} else if c == keys.K_ESC && a.copying.running {
