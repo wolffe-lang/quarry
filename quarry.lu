@@ -3,6 +3,7 @@
 //! `pane.Pane`s and which one is active; `ui.draw` turns it into
 //! a frame; keys move the cursor, switch panes and walk the tree
 
+use worker
 use job
 use dialog
 use grid

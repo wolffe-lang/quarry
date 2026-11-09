@@ -94,7 +94,7 @@ fn test_a_copy_matches_byte_for_byte() {
 	var buf = List[byte]()
 	let ok = worker.walk("wt-copy.tmp/src", "wt-copy.tmp/dest/src", false, mut p, mut buf)
 	let a = fs.read_text("wt-copy.tmp/dest/src/a.txt") else "?"
-	let b =- fs.read_text("wt-copy.tmp/dest/src/sub/deeper/b.txt") else "?"
+	let b = fs.read_text("wt-copy.tmp/dest/src/sub/deeper/b.txt") else "?"
 	let big_src = fs.read_bytes("wt-copy.tmp/src/big.bin") else List[byte]()
 	let big_dst = fs.read_bytes("wt-copy.tmp/dest/src/big.bin") else List[byte]()
 	let link_kind = kind_of("wt-copy.tmp/dest/src/link")
@@ -134,6 +134,8 @@ fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
 
 	let exists = worker.main(over)
 	var usage = List[str]()
+	(mut usage).push("move")
+
 	let wrong = worker.main(usage)
 
 	fs.remove_dir_all("wt-refuse.tmp") else |_| {}

@@ -139,6 +139,7 @@ fn copy_link(src: str, dst: str, mut p: Progress) -> bool {
 
 	let target = str_from_utf8(raw) else |_| {
 		fail("the link {src} names a target that is not UTF-8")
+		return false
 	}
 
 	fs.symlink(target, dst) else |e| {
@@ -229,7 +230,7 @@ fn present(path: str) -> bool {
 }
 
 /// `quarry --worker ARGS...`. Answers the exit code.
-pub fn main(args: List[str]) -> {
+pub fn main(args: List[str]) -> int {
 	if args.len < 3 || args[0] != "copy" {
 		fail("usage: quarry --worker copy DEST SRC...")
 		return 2
@@ -255,7 +256,11 @@ pub fn main(args: List[str]) -> {
 			return 1
 		}
 
-		i+ - 1
+		if !walk(src, dst, true, mut total, mut buf) {
+			return 1
+		}
+		
+		i +=  1
 	}
 
 	print("total {total.files} {total.bytes}")

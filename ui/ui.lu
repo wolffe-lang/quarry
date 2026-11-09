@@ -429,5 +429,5 @@ pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job) {
 		c += bar_w + 2
 	}
 
-	let _ = grid.puts(mut g, row, c, g.col - c, numbers, grid.DEFAULT, grid.DEFAULT, 0)
+	let _ = grid.puts(mut g, row, c, g.cols - c, numbers, grid.DEFAULT, grid.DEFAULT, 0)
 }
