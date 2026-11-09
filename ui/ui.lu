@@ -29,6 +29,9 @@ pub const BLACK: int = 0
 /// Color 7 of the 16: white (light grey on most terminals)
 pub const WHITE: int = 7
 
+/// Color 8 of the 16: bright black, which most terminals dray grey.
+pub const GREY: int = 8
+
 /// The narrowest screen quarry draws panes on.
 pub const MIN_COLS: int = 40
 
@@ -165,6 +168,10 @@ fn size_text(e: pane.Entry) -> str {
 	pane.human_size(e.size)
 }
 
+fn ghost_mark(look: grid.Look) -> int {
+	if look.gl.h == 45 then 62 else 187
+}
+
 fn draw_pane(
 	mut g: grid.Grid,
 	look: grid.Look,
@@ -173,7 +180,8 @@ fn draw_pane(
 	width: int,
 	height: int,
 	active: bool,
-	home: str
+	ghost: bool,
+	home: str,
 ) {
 	let edge = if active then col(look, CYAN + 8) else grid.DEFAULT
 	grid.frame(mut g, 0, left, height, width, look.gl, edge)
@@ -188,12 +196,30 @@ fn draw_pane(
 		grid.DEFAULT,
 		if active then grid.ATTR_REVERSE else grid.ATTR_BOLD,
 	)
+	
 	let inner = width - 2
 	let size_w = 6
 	let name_w = inner - size_w - 2
 
 	if p.entries.len == 0 {
-		let _ = grid.puts(mut g, 1, left + 2, inner - 2, "(empty)", grid.DEFAULT, grid.DEFAULT, 0)
+		// An empty pane can still hold the cursor: it waits on the note.
+		let attr = if active then grid.ATTR_REVERSE else 0
+
+		if active {
+			grid.fill(mut g, 1, left + 1, inner, 32, grid.DEFAULT, grid.DEFAULT, attr)
+		}
+
+		let _ = grid.puts(
+			mut g,
+			1,
+			left + 2,
+			inner - 2,
+			"(empty)",
+			grid.DEFAULT,
+			grid.DEFAULT,
+			attr,
+		)
+		
 		return
 	}
 
@@ -203,17 +229,23 @@ fn draw_pane(
 		let e = copy p.entries[i]
 		let (fg, base, mark) = style(look, e)
 		let on = active && i == p.cursor
+		let shade = ghost && i == p.cursor
 		let attr = if on then base | grid.ATTR_REVERSE else base
+		let bg = if shade then col(look, GREY) else grid.DEFAULT
 
-		if on {
-			grid.fill(mut g, r + 1, left + 1, inner, 32, fg, grid.DEFAULT, attr)
+		if on || shade {
+			grid.fill(mut g, r + 1, left + 1, inner, 32, fg, bg, attr)
+		}
+
+		if shade {
+			grid.put(mut g, r + 1, left + 1, ghost_mark(look), fg, bg, attr | grid.ATTR_BOLD)
 		}
 
 		let name = fit(pane.display_name(p, i) + mark, name_w)
-		let _ = grid.puts(mut g, r + 1, left + 2, name_w, name, fg, grid.DEFAULT, attr)
+		let _ = grid.puts(mut g, r + 1, left + 2, name_w, name, fg, bg, attr)
 		let size = size_text(e)
 		let at = left + 1 + inner - 1 - cells(size)
-		let _ = grid.puts(mut g, r + 1, at, size_w, size, fg, grid.DEFAULT, attr)
+		let _ = grid.puts(mut g, r + 1, at, size_w, size, fg, bg, attr)
 
 		r += 1
 	}
@@ -265,8 +297,8 @@ pub fn draw(
 	let height = g.rows - 2
 	let half = g.cols / 2
 
-	draw_pane(mut g, look, left, 0, half, height, active == 0, home)
-	draw_pane(mut g, look, right, half, g.cols - half, height, active == 1, home)
+	draw_pane(mut g, look, left, 0, half, height, active == 0, active == 1,  home)
+	draw_pane(mut g, look, right, half, g.cols - half, height, active == 1, false, home)
 
 	let row = g.rows - 2
 
