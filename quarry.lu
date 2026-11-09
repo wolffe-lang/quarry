@@ -287,25 +287,100 @@ fn edit_file(mut a: App) {
 	hand_over(mut a, path)
 }
 
-/// Enter: go into a directory, or edit a file.
-fn open(mut a: App) {
-	let went = pane.enter(mut a.panes[a.active]) else |e| {
-		say(mut a, "cannot open that directory: {e}")
+/// The name under the active pane's cursor, for a message.
+fn cursor_name(a: App) -> str {
+	let p = a.panes[a.active]
+
+	if p.cursor >= p.entries.len {
+		return ""
+	}
+
+	pane.display_name(p, p.cursor)
+}
+
+/// Right: into the right pane, a slide, or a peek. A refusal is said on
+/// the status line, and nothing moves.
+fn go_right(mut a: App) {
+	let from = a.active
+	let to = nav.go_right(mut a.panes, mut a.view, from) else |e| {
+		let name = cursor_name(a)
+
+		match e {
+			file => {
+				say(mut a, "Enter opens {name} in your editor")
+			},
+			dangling => {
+				say(mut a, "{name} points at nothing that is there")
+			},
+			utf8 => {
+				say(mut a, "quarry cannot reach a name that is not UTF-8")
+			}, 
+			not_found => {
+				say(mut a, "{name} is gone")
+			},
+			denied => {
+				say(mut a, "cannot open {name}: denied")
+			},
+			io => {
+				say(mut a, "cannot open {name}: io")
+			},
+		}
+
+		from
+	}
+
+	a.active = to
+}
+
+/// Left: back into the left pane, or a slide the other way.
+fn go_left(mut a: App) {
+	let from = a.active
+	let to = nav.go_left(mut a.panes, mut a.view, from) else |e| {
+		match e {
+			top => {
+				say(mut a, "/ is the top")
+			},
+			not_found => {
+				say(mut a, "the parent is gone")
+			}, 
+			denied => {
+				say(mut a, "cannot open the parent: denied")
+			},
+			io => {
+				say(mut a, "cannot open the parent: io")
+			},
+		}
+
+		from
+	}
+
+	a.active = to
+}
+
+/// Tab: the cursor to the other pane, never a slide.
+fn go_across(mut a: App) {
+	let from = a.active
+	if from == a.view.left {
+		go_right(mut a)
+
 		return
 	}
 
-	if !went {
+	go_left(mut a)
+}
+
+/// Enter: a file opens in the editor; anything else is Right.
+fn open(mut a: App) {
+	if nav.under(a.panes[a.active]) == nav.ITEM_FILE {
 		edit_file(mut a)
+
+		return
 	}
+
+	go_right(mut a)
 }
 
 
-/// Go to the parent directory
-fn go_up(mut a: App) {
-	pane.up(mut a.panes[a.active]) else |e| {
-		say(mut a, "cannot open the parent: {e}")
-	}
-}
 
 /// Pane `i`'s directory vanished: walk up and say where we landed.
 fn recover(mut a: App, i: int) {
@@ -718,10 +793,14 @@ fn on_key(mut a: App, k: keys.Key) {
 		a.panes[a.active].cursor = 0
 	} else if c == keys.K_END {
 		a.panes[a.active].cursor = a.panes[a.active].entries.len - 1
-	} else if c == keys.K_ENTER || c == keys.K_RIGHT {
+	} else if c == keys.K_RIGHT {
+		go_right(mut a)
+	} else if c == keys.K_ENTER {
 		open(mut a)
 	} else if c == keys.K_BACKSPACE || c == keys.K_LEFT {
-		go_up(mut a)
+		go_left(mut a)
+	} else if c == keys.K_TAB {
+		go_across(mut a)
 	} else if c == 46 && plain {
 		toggle_hidden(mut a)
 	} else if c == 114 && k.mods == keys.MOD_CTRL {
