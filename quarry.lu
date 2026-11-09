@@ -1,7 +1,6 @@
-//! member: false
-//! quarry, step 5: two panes on real directories. The model is two
-//! `pane.Pane`s and which one is active; `ui.draw` turns it into
-//! a frame; keys move the cursor, switch panes and walk the tree
+//! quarry: a two-pane file manager for PAX's console and any terminal.
+//! The left pane is where you are; the right pane is what is under the
+//! left pane's cursor.
 
 use std.process
 use worker
@@ -9,6 +8,7 @@ use job
 use dialog
 use grid
 use keys
+use nav
 use pane
 use std.env
 use std.fs
@@ -23,8 +23,13 @@ const DRAIN_MAX: int = 262144
 /// How often quarry looks at the panes' directories, in milliseconds
 const POLL_MS: int = 1000
 
+/// How long the left cursor must rest before the right pane follows it,
+/// in milliseconds. A held arrow repeats faster than this, so it never
+/// makes a view it would throw away.
+const SETTLE_MS: int = 60
+
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " F5 Copy  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  Tab Pane  ^R Reload  q Quit"
+const KEYBAR: str = " F4 Edit  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  ^R Reload  q Quit"
 
 /// What a dialog's yes does: rename the entry under the cursor.
 const ACT_MKDIR: int = 1
@@ -47,6 +52,8 @@ struct App {
 	dirty: bool,
 	panes: List[pane.Pane],
 	active: int,
+	view: nav.View,
+	due_ms: int,
 	home: str,
 	status: List[byte],
 	next_poll_ms: int,
@@ -88,8 +95,16 @@ fn paint(mut a: App) {
 		pane.settle(mut a.panes[1], rows)
 
 		let status = str_from_utf8(a.status) else ""
+		let l = a.view.left
+		let side = if a.active == l then 0 else 1
 
-		ui.draw(mut a.back, a.look, a.panes[0], a.panes[1], a.active, a.home, status, KEYBAR)
+		ui.draw(mut a.back, a.look, a.panes[l], a.panes[1 - l], side, a.home, status, KEYBAR)
+
+		if a.view.shows != nav.SHOWS_LISTING {
+			let of = str_from_utf8(a.view.of) else ""
+			let why = str_from_utf8(a.view.why) else ""
+			ui.draw_note(mut a.back, a.look, of, why, a.home)
+		}
 
 		if a.copying.running {
 			ui.draw_progress(mut a.back, a.look, a.copying)
@@ -118,6 +133,10 @@ fn wait_ms(a: App) -> int {
 
 	if esc >= 0 && esc < due {
 		due = esc
+	}
+
+	if a.due_ms >= 0 && a.due_ms < due {
+		due = a.due_ms
 	}
 	
 	let now = now_ms()
@@ -297,11 +316,34 @@ fn recover(mut a: App, i: int) {
 	}
 }
 
-/// Read pane `i` again.
+/// The right pane's directorty is gone: the view is made again when the
+/// cursor rests, and a cursor in the right pane comes back to the left.
+fn stale(mut a: App) {
+	a.view.shows = nav.SHOWS_NOTHING
+	(mut a.view.of).reset()
+
+	if a.active != a.view.left {
+		a.active = a.view.left
+		say(mut a, "that directory is gone")
+	}
+}
+
+/// Read pane `i` again. The right pane is a view: it is read only while
+/// it is a listing, and when its directory has gone the view goes stale
+/// instead of walking up.
 fn reload(mut a: App, i: int) {
+	let right = i != a.view.left
+	if right && a.view.shows != nav.SHOWS_LISTING {
+		return
+	}
+
 	pane.load(mut a.panes[i]) else |e| match e {
 		not_found => {
-			recover(mut a, i)
+			if right {
+				stale(mut a)
+			} else {
+				recover(mut a, i)
+			}
 		},
 		denied => {
 			say(mut a, "cannot reload: denied")
@@ -321,29 +363,73 @@ fn poll_disk(mut a: App) {
 	}
 
 	a.next_poll_ms = now + POLL_MS
-	var i = 0
-	while i < 2 {
-		region scratch {
-			let c = pane.changed(a.panes[i])
 
-			if c == 1 {
-				reload(mut a, i)
-				a.dirty = true
-			} else if c == 2 {
-				recover(mut a, i)
-				a.dirty = true
-			}
+	let l = a.view.left
+	let r = 1- l
+
+	region scratch {
+		let c = pane.changed(a.panes[l])
+		if c == 1 {
+			reload(mut a, l)
+			a.dirty = true
+		} else if c == 2 {
+			recover(mut a, l)
+			a.dirty = true
 		}
 
-		i += 1
+		let d = if a.view.shows == nav.SHOWS_LISTING then pane.changed(a.panes[r]) else 0
+		if d == 1 {
+			reload(mut a, r)
+			a.dirty = true
+		} else if d == 2 {
+			stale(mut a)
+			a.dirty = true
+		}
 	}
 }
 
-/// Show or hide dot files in the active pane.
+/// Keep the right pane on the item under the left cursor. When the
+/// cursor has moved off the item the view was made for, wait until it
+/// has rested for SETTLE_MS (`pressed` says a key came this turn, which
+/// starts the wait again), then make the view once.
+fn track(mut a: App, pressed: bool) {
+	var current = true
+	region scratch {
+		current = nav.current(a.panes, a.view)
+	}
+
+	if current {
+		a.due_ms = -1
+		return
+	}
+
+	let now = now_ms()
+	if pressed || a.due_ms < 0 {
+		a.due_ms = now + SETTLE_MS
+		return
+	}
+
+	if now < a.due_ms {
+		return
+	}
+
+	region scratch {
+		nav.follow(mut a.panes, mut a.view)
+	}
+
+	a.due_ms = -1
+	a.dirty = true
+}
+
+/// Show or hide dot files, in both panes: the right one is a view
 fn toggle_hidden(mut a: App) {
-	a.panes[a.active].show_hidden = !a.panes[a.active].show_hidden
-	pane.load(mut a.panes[a.active]) else |e| {
-		say(mut a, "cannot reload: {e}")
+	let on = !a.panes[a.active].show_hidden
+	a.panes[0].show_hidden = on
+	a.panes[1].show_hidden = on
+	reload(mut a, a.view.left)
+
+	if a.view.shows == nav.SHOWS_LISTING {
+		reload(mut a, 1 - a.view.left)
 	}
 }
 
@@ -632,8 +718,6 @@ fn on_key(mut a: App, k: keys.Key) {
 		a.panes[a.active].cursor = 0
 	} else if c == keys.K_END {
 		a.panes[a.active].cursor = a.panes[a.active].entries.len - 1
-	} else if c == keys.K_TAB {
-		a.active = 1 - a.active
 	} else if c == keys.K_ENTER || c == keys.K_RIGHT {
 		open(mut a)
 	} else if c == keys.K_BACKSPACE || c == keys.K_LEFT {
@@ -651,8 +735,6 @@ fn on_key(mut a: App, k: keys.Key) {
 		ask_delete(mut a)
 	} else if c == keys.K_F0 + 4 || c == 101 && plain {
 		edit_file(mut a)
-	} else if c == keys.K_F0 + 5 {
-		start_copy(mut a)
 	} else if c == keys.K_ESC && a.copying.running {
 		job.cancel(mut a.copying)
 		say(mut a, "cancelling the copy")
@@ -724,11 +806,15 @@ fn run(mut a: App) {
 		}
 
 		poll_disk(mut a)
-		while a.running &&  keys.next(mut a.dec, now_ms(), mut k) {
+		var pressed = false
+		while a.running && keys.next(mut a.dec, now_ms(), mut k) {
+			pressed = true
 			region scratch {
 				on_key(mut a, k)
 			}
 		}
+		
+		track(mut a, pressed)
 	}
 
 	// Quitting with a copy running: stop it and tidy up after it.
@@ -754,23 +840,29 @@ fn main() -> !int {
 		return worker.main(args[1..args.len])
 	}
 
-	let left_arg = env_args().get(0) else ""
-	let right_arg = env_args().get(1) else left_arg
-	var panes = List[pane.Pane]()
-
-	for arg in [left_arg, right_arg] {
-		let path = start_path(arg) else |_| {
-			eprint("quarry: no such directory: {arg}")
-			return 1
-		}
-
-		var p = pane.new(path)
-		pane.load(mut p) else |e| {
-			eprint("quarry: cannot list {path}: {e}")
-			return 1
-		}
-		(mut panes).push(p)
+	// One directory at most: the left pane's. The right pane is a view
+	if args.len > 1 {
+		eprint("usage: quarry [DIR]")
+		return 2
 	}
+
+	let arg = args.get(0) else ""
+	let path = start_path(arg) else |_| {
+		eprint("quarry: no such directory: {arg}")
+		return 1
+	}
+
+	var panes = List[pane.Pane]()
+	(mut panes).push(pane.new(path))
+	(mut panes).push(pane.new(path))
+
+	pane.load(mut panes[0]) else |e| {
+		eprint("quarry: cannot list {path}: {e}")
+		return 1
+	}
+
+	var view = nav.start()
+	nav.follow(mut panes, mut view)
 
 	var t = tty.open() else |e| {
 		eprint("quarry: standard input and output must be a terminal ({e})")
@@ -796,7 +888,9 @@ fn main() -> !int {
 		running: true, 
 		dirty: true,
 		panes: panes,
-		active: 0, 
+		active: 0,
+		view: view,
+		due_ms: -1,
 		home: env.get("HOME") else "",
 		status: List[byte](),
 		next_poll_ms: now_ms() + POLL_MS,
