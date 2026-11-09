@@ -431,3 +431,76 @@ pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job) {
 
 	let _ = grid.puts(mut g, row, c, g.cols - c, numbers, grid.DEFAULT, grid.DEFAULT, 0)
 }
+
+/// An empty box where the right pane goes, framed and titled as a pane
+/// without the cursor is. Answers the box's left column.
+fn right_box(mut g: grid.Grid, look: grid.Look, path: str, home: str) -> int {
+	let left = g.cols / 2
+	let width = g.cols - left
+	let height = g.rows - 2
+
+	var r = 0
+	while r < height {
+		grid.fill(mut g, r, left, width, 32, grid.DEFAULT, grid.DEFAULT, 0)
+
+		r += 1
+	}
+
+	grid.frame(mut g, 0, left, height, width, look.gl, grid.DEFAULT)
+
+	if path != "" {
+		let title = " " + short_path(path, home, width - 6) + " "
+		let _ = grid.puts(
+			mut g,
+			0,
+			left + 2,
+			width - 4,
+			title,
+			grid.DEFAULT,
+			grid.DEFAULT,
+			grid.ATTR_BOLD
+		)
+	}
+
+	left
+}
+
+/// The right pane when it is not not a listing: the path of what is under
+/// the left cursor as its title, and a note, wrapped at its spaces.
+/// Drawn over what `draw` put there.
+pub fn draw_note(mut g: grid.Grid, look: grid.Look, path: str, note: str, home: str) {
+	if g.cols < MIN_COLS || g.rows < MIN_ROWS {
+		return 
+	}
+
+	let left = right_box(mut g, look, path, home)
+	let w = g.cols - left - 4
+	var row = 1
+	var line = ""
+
+	for word in note.words() {
+		if line != "" && cells(line) + 1 + cells(word) > w {
+			if row < g.rows - 3 {
+				let _ = grid.puts(
+					mut g, 
+					row,
+					left + 2,
+					w,
+					fit(line, w),
+					grid.DEFAULT,
+					grid.DEFAULT,
+					0,
+				)
+			}
+
+			row += 1
+			line = ""
+		}
+
+		line = if line == "" then word else line + " " + word
+	}
+
+	if line != "" && row < g.rows - 3 {
+		let _ = grid.puts(mut g, row, left + 2,w, fit(line, w), grid.DEFAULT, grid.DEFAULT, 0)
+	}
+}
