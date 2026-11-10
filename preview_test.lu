@@ -105,7 +105,7 @@ fn test_a_fifo_is_never_opened() {
 
 	fs.remove("pv-fifo.tmp") else |_| {}
 
-	assert(note == "a named pipe (fifo)L not read", "note: {note}")
+	assert(note == "a named pipe (fifo) not read", "note: {note}")
 }
 
 fn test_empty_unreadable_and_missing_files() {
@@ -124,7 +124,7 @@ fn test_empty_unreadable_and_missing_files() {
 	fs.remove("pv-empty.tmp") else |_| {}
 	fs.remove("pv-denied.tmp") else |_| {}
 
-	assert(empter == "an empty file", "empter: {empty}")
+	assert(empty == "an empty file", "empter: {empty}")
 	assert(denied == "cannot read pv-denied.tmp: denied", "denied: {denied}")
 	assert(missing == "cannot read pv-missing.tmp: not_found", "missing: {missing}")
 }

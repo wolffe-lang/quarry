@@ -59,7 +59,7 @@ fn blank() -> Preview {
 		kind: NOTE,
 		head: List[byte](),
 		starts: List[int](),
-		note: List[byte],
+		note: List[byte](),
 	}
 }
 
@@ -167,7 +167,7 @@ fn fill(mut pv: Preview, path: str, info: fs.Info, failed: str) {
 	}
 
 	if info.kind != pane.KIND_FILE {
-		set(mut pv.note, "{kind_name(int.kind)}: not read")
+		set(mut pv.note, "{kind_name(info.kind)}: not read")
 
 		return
 	}
@@ -377,7 +377,7 @@ pub fn magic(head: List[byte]) -> str {
 }
 
 /// How many lines of text the preview holds.
-pub fn lines(pv: Preview) -> {
+pub fn lines(pv: Preview) -> int {
 	if pv.kind == TEXT then pv.starts.len else 0
 }
 

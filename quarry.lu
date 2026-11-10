@@ -103,7 +103,7 @@ fn paint(mut a: App) {
 
 		ui.draw(mut a.back, a.look, a.panes[l], a.panes[1 - l], side, a.home, status, KEYBAR)
 
-		if a.view.shows == nav.SHOWS_FILE  && a.shows >= 0 {
+		if a.view.shows == nav.SHOWS_FILE  && a.shown >= 0 {
 			ui.draw_preview(mut a.back, a.look, a.cache.slots[a.shown], a.home)
 		} else if a.view.shows != nav.SHOWS_LISTING {
 			let of = str_from_utf8(a.view.of) else ""
