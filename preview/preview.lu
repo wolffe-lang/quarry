@@ -359,6 +359,10 @@ pub fn magic(head: List[byte]) -> str {
 	}
 
 	if starts_with(head, [137, 80, 78, 71]) {
+		return "PNG image"
+	}
+
+	if starts_with(head, [255, 216, 255]) {
 		return "JPEG image"
 	}
 
