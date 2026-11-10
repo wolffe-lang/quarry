@@ -79,7 +79,7 @@ fn test_only_the_head_of_a_big_file_is_read() {
 }
 
 fn test_a_character_cut_at_the_end_of_the_head_is_still_text() {
-	fs.write_text("pv-cut.tmp", "a".repeat(preview.HEAD_MAX - 1) + "e and more") else |_| {}
+	fs.write_text("pv-cut.tmp", "a".repeat(preview.HEAD_MAX - 1) + "\u{e9} and more") else |_| {}
 
 	var c = preview.cache()
 	let at = preview.look(mut c, "pv-cut.tmp")
@@ -105,7 +105,7 @@ fn test_a_fifo_is_never_opened() {
 
 	fs.remove("pv-fifo.tmp") else |_| {}
 
-	assert(note == "a named pipe (fifo) not read", "note: {note}")
+	assert(note == "a named pipe (fifo): not read", "note: {note}")
 }
 
 fn test_empty_unreadable_and_missing_files() {
