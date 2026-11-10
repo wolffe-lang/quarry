@@ -50,9 +50,24 @@ pub struct View {
 	why: List[byte],
 }
 
+/// Where the cursor was: the left pane's directory and the name under
+/// its cursor, and, when the cursor was in the right pane, the name under
+/// that pane's cursor. Copy mode keeps one, for Escape.
+pub struct Spot {
+	path: List[byte],
+	name: List[byte],
+	inside: bool,
+	inner: List[byte],
+}
+
 /// No view yet, with pane 0 on the left
 pub fn start() -> View {
 	View { left: 0, shows: SHOWS_NOTHING, of: List[byte](), why: List[byte]() }
+}
+
+/// Nowhere yet.
+pub fn no_spot() -> Spot {
+	Spot { path: List[byte](), name: List[byte](), inside: false, inner: List[byte]() }
 }
 
 fn set(mut b: List[byte], text: str) {
@@ -249,8 +264,53 @@ pub fn go_left(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! Le
 	r
 }
 
+/// The name under `p`'s cursor, or "".
+fn cursor_name(p: pane.Pane) -> str {
+	if p.cursor < 0 || p.cursor >= p.entries.len {
+		return ""
+	}
 
+	pane.display_name(p, p.cursor)
+}
 
+/// Remember where the cursor is now.
+pub fn mark_spot(mut s: Spot, panes: List[pane.Pane], v: View, active: int) {
+	set(mut s.path, pane.path_of(panes[v.left]))
+	set(mut s.name, cursor_name(panes[v.left]))
 
+	s.inside = active != v.left
+	set(mut s.inner, if s.inside then cursor_name(panes[active]) else "")
+}
 
+/// Put the panes and the cursor back where `s` says, as far as the disk
+/// still allows: a directory that has gone leaves the cursor where it is.
+/// Answers the pane that has the cursor.
+pub fn got_to(mut panes: List[pane.Pane], mut v: View, s: Spot, active: int) -> int {
+	let l = v.left
+	let path = str_from_utf8(s.path) else ""
 
+	pane.open(mut panes[l], path, str_from_utf8(s.name) else "") else |_| {
+		return active
+	}
+
+	follow(mut panes, mut v)
+
+	if s.inside && v.shows == SHOWS_LISTING {
+		let _ = pane.cursor_to(mut panes[1 - l], str_from_utf8(s.inner) else "")
+
+		return 1 - l
+	}
+
+	l
+}
+
+/// Slide the panes so that the pane with the cursor is the left one and 
+/// the right pane is the view of the item under it, the cursor staying 
+/// on its item: what a peek does for a file, for any item. Answers the
+/// pane that has the cursor.
+pub fn bring_left(mut panes: List[pane.Pane], mut v: View, active: int) -> int {
+	v.left = active
+	follow(mut panes, mut v)
+
+	active
+}
