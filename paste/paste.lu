@@ -1,0 +1,241 @@
+//! paste: copy mode's rules. The payload is what is being copied: one
+//! directory, and the names in it that are going. `decide` says what
+//! Enter would do from where the mobile cursor is, and `hint` says it in
+//! words. Nothing here draws, and nothing here copies.
+
+
+use pane
+use std.fs
+
+
+/// Enter pasttes into the directory under the cursor
+pub const INTO: int = 1
+
+/// Enter pastes beside the file under the cursor, into the right pane's
+/// directory.
+pub const BESIDE: int = 2
+
+/// Enter pastes into the directory the right pane lists, which is empty.
+pub const HERE: int = 3
+
+/// Refused: the place is a directory being copied, or inside one.
+pub const ITSELF: int = -2
+
+/// Refused: nothing to paste onto here.
+pub const NOWHERE: int = -3
+
+/// What is being copied: its directory, that directory's real path (for
+/// the into-itself check), and the names, in one byte pool with where
+/// each one ends.
+pub struct Payload {
+	dir: List[byte],
+	real: List[byte],
+	pool: List[byte], 
+	ends: List[byte],
+}
+
+/// What Enter would do: one of the rules above, the directory a pate
+/// goes into, and the name under the cursor, for the hint.
+pub struct Choice {
+	rule: int, 
+	dest: str,
+	near: str,
+}
+
+/// Nothing being copied.
+pub fn none() -> Payload {
+	Payload { dir: List[byte](), real: List[byte](), pool: List[byte](), ends: List[int]() }
+}
+
+fn set(mut b: List[byte], text: str) {
+	(mut b).reset()
+
+	for x in text.bytes() {
+		(mut b).push(x)
+	}
+}
+
+/// Copy mode is over: nothing is being copied
+pub fn clear(mut pl: Payload) {
+	(mut pl.dir).reset()
+	(mut pl.real).reset()
+	(mut pl.pool).reset()
+	(mut pl.ends).reseT()
+}
+
+/// How many items are being copied.
+pub fn count(pl: Payload) -> int {
+	pl.ends.len
+}
+
+/// The name of item `i`, built in the caller's region.
+pub fn name(pl: Payload, i: int) -> str {
+	let from = if i == 0 then 0 else pl.ends[i - 1]
+	str_from_utf8(pl.pool[from..pl.ends[i]]) else ""
+}
+
+/// Take the payload from pane `p`: its marked entires, or the one under
+/// its cursor when nothing is marked. A name that is not UTF-8 is left
+/// out, since std cannot reach it. Answers how many were taken.
+pub fn collect(mut pl: Payload, p: pane.Pane) -> int {
+	clear(mut pl)
+
+	let dir = pane.path_of(p)
+
+	set(mut pl.dir, dir)
+	set(mut pl.real, fs.realpath(dir) else dir)
+
+	for i in pane.targets(p) {
+		if p.entries[i].utf8 {
+			for b in pane.name_bytes(p, i) {
+				(mut pl.pool).push(b)
+			}
+
+			(mut pl.ends).push(pl.pool.len)
+		}
+	}
+
+	pl.ends.len
+}
+
+/// The paths of the items being copied, built in the caller's region.
+pub fn sources(pl: Payload) -> List[str] {
+	var out = List[str]()
+	let dir = str_from_utf8(pl.dir) else ""
+
+	var i = 0
+	while i < count(pl) {
+		(mut out).push(fs.join(dir, name(pl, i)))
+
+		i += 1
+	}
+
+	out
+}
+
+/// Whether pane `p` lists the payload's directory, so some of its rows
+/// may be sticky.
+pub fn shows(pl: Payload, p: pane.Pane) -> bool {
+	if count(pl) == 0 || p.path.len != pl.dir.len {
+		return false
+	}
+
+	var i = 0 
+	while i < p.path.len {
+		if p.path[i] != pl.dir[i] {
+			return false
+		}
+
+		i += 1
+	}
+
+	true
+}
+
+/// Whether entry `i` of a pane that `shows` the payload is being copied.
+pub fn holds(pl: Payload, p:  pane.Pane, i: int) -> bool {
+	let e = copy p.entries[i]
+	var from = 0
+
+	for end in pl.ends {
+		if end - from == e.len {
+			var j = 0
+			while j < e.len && pl.pool[from + j] == p.names[e.off + j] {
+				j += 1
+			}
+
+			if j == e.len {
+				return true
+			}
+		}
+
+		from = end
+	}
+
+	false
+}
+
+/// Whether `dest` is a directory being copied, or inside one. Both sides
+/// are real paths, so a link cannot hide a directory inside itself.
+fn inside(pl: Payload, dest: str) -> bool {
+	let d = fs.realpath(dest) else dest
+	let real = str_from_utf8(pl.real) else ""
+
+	var i = 0
+	while i < count(pl) {
+		let src = fs.join(real, name(pl, i))
+		if d == src || d.starts_with(src + "/") { 
+			return true
+		}
+
+		i += 1
+	}
+
+	false
+}
+
+/// What Enter would do with the mobile cursor in pane `p`, which is the
+/// right pane when `in_right`. On a directory: into it. In the right
+/// pane on a file: beside it; on nothing (an empty directory): into the
+/// directory. In the left pane on a file: refused.
+pub fn decide(pl: Payload, p: pane.Pane, in_right: bool) -> Choice {
+	var c = Choice { rule: NOWHERE, dest: "", near: "" }
+
+	if p.cursor >= p.etries.len {
+		if in_right {
+			c.rule = HERE
+			c.dest = pane.path_of(p)
+		}
+	} else if p.entries[p.cursor].utf8 {
+		c.near = pane.display_name(p, p.cursor)
+
+		if p.entries[p.cursor].to_dir {
+			c.rule = INTO
+			c.dest = pane.child_path(p, p.cursor) else ""
+		} else if in_right {
+			c.rule = BESIDE
+			c.desst = pane.path_of(p)
+		} else {
+			c.rule = FROM_LEFT
+		}
+	}
+
+	if c.rule > 0 && inside(pl, c.dest) {
+		c.rule = ITSELF
+	}
+
+	c
+}
+
+/// The status line in copy mode: what is being copied, and what Enter
+/// would do with it from here.
+pub fn hint(pl: Payload, c: Choice) -> str {
+	let one = count(pl) == 1
+	let what = if one then name(pl, 0) else "{count(pl)} items"
+	let it = if one then "it" else "them"
+	let head = "copy {what}: "
+
+	if c.rule == INTO {
+		return head + "Enter pastes {it} into {c.near}/"
+	}
+
+	if c.rule == BESIDE {
+		return head + "Enter pastes {it} beside {c.near}"
+	}
+
+	if c.rule == HERE {
+		return head + "Enter pastes {it} into {fs.file_name(c.dest) else c.dest}/"
+	}
+
+	if c.rule == FROM_LEFT {
+		return head + "to paste beside {c.near}, pick it in the right pane"
+	}
+
+	if c.rule == ITSELF {
+		return head + "cannot pate {it} into " + (if one then "itself" else "one of them")
+	}
+
+	head + "nothing to paste onto here"
+}
+
+
