@@ -219,7 +219,35 @@ pub fn go_right(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! R
 	l
 }
 
+/// Left. In the right pane: go back into the left pane; nothing is read. In
+/// the left pane; slide right, so the left pane's parent is read into 
+/// the other pane with its cursor on the directory you were in, and the
+/// left pane moves to the right, its cursor where it was. At `/`, `top`. 
+/// Answers the panes that has the cursor.
+pub fn go_left(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! LeftErrors {
+	let l = v.left
+	let r = 1 - l
 
+	if active {
+		return l
+	}
+
+	let here = pane.path_of(panes[l])
+	let up = fs.parent(here) else here
+
+	if up == here {
+		return top
+	}
+
+	pane.open(mut panes[r], up, fs.file_name(here) else "")?
+
+	v.left = r
+	v.shows = SHOWS_LISTING
+	set(mut v.of, here)	
+	(mut v.why).reset()
+
+	r
+}
 
 
 
