@@ -4,6 +4,7 @@
 
 use grid
 use pane
+use preview
 use std.fs
 use ui
 
@@ -81,3 +82,6 @@ fn test_the_ghost_marks_the_left_cursor() {
 	// assert(right.starts_with(""), "the ghost where the cursor is: {right}")
 	assert(plain.starts_with("|>docs/ "), "ASCII: {plain}")
 }
+
+// fn test_a_preview_in_the_right_pane() {
+// }
