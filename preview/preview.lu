@@ -120,7 +120,7 @@ pub fn look(mut c: Cache, path: str) -> int {
 
 	var failed = ""
 	let info = fs.stat(path) else |e| {
-		faied = "{e}"
+		failed = "{e}"
 		pane.no_info(2)
 	}
 
@@ -143,7 +143,7 @@ pub fn look(mut c: Cache, path: str) -> int {
 }
 
 /// The name a note gives the file: the last part of its path.
-fn fname_of(path: str) -> str {
+fn name_of(path: str) -> str {
 	fs.file_name(path) else path
 }
 
@@ -327,7 +327,7 @@ fn read_head(mut pv:  Preview, path: str) {
  	}
  }
 
-fn starts_with(head: List[byte, sig: List[int]]) -> bool {
+fn starts_with(head: List[byte], sig: List[int]) -> bool {
 	if head.len < sig.len {
 		return false 
 	}
@@ -374,6 +374,11 @@ pub fn magic(head: List[byte]) -> str {
 		return "gzip data"
 	}
 	""
+}
+
+/// How many lines of text the preview holds.
+pub fn lines(pv: Preview) -> {
+	if pv.kind == TEXT then pv.starts.len else 0
 }
 
 /// Line `i` of a text preview, for the screen: its carriage return

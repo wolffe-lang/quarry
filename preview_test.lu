@@ -1,0 +1,180 @@
+//! member: false
+//! preview's tests: real files under the working directory, made and
+//! removed by each test
+
+use preview
+use std.fs
+
+fn test_a_text_head_its_lines_tabs_and_returns() {
+	fs.write_text("pv-text.tmp", "one\r\n\ttwo\nthree\n") else |_| {}
+
+	var c = preview.cache()
+	let at = preview.look(mut c, "pv-text.tmp")
+	let kind = c.slots[at].kind
+	let n = preview.lines(c.slots[at])
+	let a = preview.line(c.slots[at], 0)
+	let b = preview.line(c.slots[at], 1)
+	let d = preview.line(c.slots[at], 2)
+
+	fs.remove("pv-text.tmp") else |_| {}
+
+	assert(kind == preview.TEXT && n == 3, "text, three lines: {kind} {n}")
+	assert(a == "one" && b == "    two" && d == "three", "[{a}] [{b}] [{d}]")
+}
+
+fn test_a_binary_head_its_summary_and_hex() {
+	var bytes = List[byte]()
+
+	for x in [137, 80, 78, 71, 13, 10, 26, 10] {
+		(mut bytes).push(x as byte)
+	}
+
+	var i = 0
+	while i < 92 {
+		(mut bytes).push(0 as byte)
+
+		i += 1
+	}
+
+	fs.write_bytes("pv-png.tmp", bytes) else |_| {}
+
+	var c = preview.cache()
+	let at = preview.look(mut c, "pv-png.tmp")
+	let kind = c.slots[at].kind
+	let note = str_from_utf8(c.slots[at].note) else ""
+	let first = preview.hex_row(c.slots[at], 0, 8)
+	let rows = preview.hex_rows(c.slots[at], 8)
+
+	fs.remove("pv-png.tmp") else |_| {}
+
+	assert(kind == preview.BINARY, "binary: {kind}")
+	assert(note == "binary file, 100: PNG image", "note: {note}")
+	assert(first == "0000 89504e47 0d0a1a0a  .PNG....", "hex: [{first}]")
+	assert(rows == 13, "rows: {rows}")
+	assert(preview.per_row(36) == 8 && preview.per_row(76) == 20, "per row")
+}
+
+fn test_only_the_head_of_a_big_file_is_read() {
+	fs.write_text("pv-big.tmp", "line onw\nline two\n".repeat(2000)) else |_| {}
+
+	// Grow it to a gigabyte without writing it: the rest reads as zeros
+	var f = fs.open_mode("pv-big.tmp", 3) else |_| {
+		fs.File { fd: -1 }
+	}
+
+	fs.truncate(mut f, 1073741824) else |_| {}
+	fs.close(take f) else |_| {}
+
+	var c = preview.cache()
+	let at = preview.look(mut c, "pv-big.tmp")
+	let kind = c.slots[at].kind
+	let read = c.slots[at].head.len
+	let size = c.slots[at].size
+
+	fs.remove("pv-big.tmp") else |_| {}
+
+	assert(size == 1073741824, "size {size}")
+	assert(read <= preview.HEAD_MAX, "read {read}")
+	assert(kind == preview.TEXT, "the head is text: {kind}")
+}
+
+fn test_a_character_cut_at_the_end_of_the_head_is_still_text() {
+	fs.write_text("pv-cut.tmp", "a".repeat(preview.HEAD_MAX - 1) + "e and more") else |_| {}
+
+	var c = preview.cache()
+	let at = preview.look(mut c, "pv-cut.tmp")
+	let kind = c.slots[at].kind
+	let kept = c.slots[at].head.len
+
+	fs.remove("pv-cut.tmp") else |_| {}
+
+	assert(kind == preview.TEXT, "text: {kind}")
+	assert(kept == preview.HEAD_MAX - 1, "the half character is dropped: {kept}")
+}
+
+fn test_a_fifo_is_never_opened() {
+	fs.remove("pv-fifo.tmp") else |_| {}
+	fs.mkfifo("pv-fifo.tmp", 420) else |_| {}
+
+	var c = preview.cache()
+
+	// An open of a fifo would wait for a writer forever: that this
+	// returns at all is the test.
+	let at = preview.look(mut c, "pv-fifo.tmp")
+	let note = str_from_utf8(c.slots[at].note) else ""
+
+	fs.remove("pv-fifo.tmp") else |_| {}
+
+	assert(note == "a named pipe (fifo)L not read", "note: {note}")
+}
+
+fn test_empty_unreadable_and_missing_files() {
+	fs.write_text("pv-empty.tmp", "") else |_| {}
+	fs.write_text("pv-denied.tmp", "secret") else |_| {}
+	fs.set_mode("pv-denied.tmp", 0) else |_| {}
+
+	var c = preview.cache()
+	let e = preview.look(mut c, "pv-empty.tmp")
+	let empty = str_from_utf8(c.slots[e].note) else ""
+	let d = preview.look(mut c, "pv-denied.tmp")
+	let denied = str_from_utf8(c.slots[d].note) else ""
+	let m = preview.look(mut c, "pv-missing.tmp")
+	let missing = str_from_utf8(c.slots[m].note) else ""
+
+	fs.remove("pv-empty.tmp") else |_| {}
+	fs.remove("pv-denied.tmp") else |_| {}
+
+	assert(empter == "an empty file", "empter: {empty}")
+	assert(denied == "cannot read pv-denied.tmp: denied", "denied: {denied}")
+	assert(missing == "cannot read pv-missing.tmp: not_found", "missing: {missing}")
+}
+
+fn test_the_cache_keeps_a_preview_until_its_file_changes() {
+	fs.write_text("pv-cache.tmp", "old") else |_| {}
+
+	var c = preview.cache()
+	let a = preview.look(mut c, "pv-cache.tmp")
+	let s = c.slots[a].mtime_s
+	let ns = c.slots[a].mtime_ns
+
+	// New bytes, the same size and time: the key has not moved.
+	fs.write_text("pv-cache.tmp", "new") else |_| {}
+	fs.set_times("pv-cache.tmp", fs.time_keep(), fs.time(s, ns)) else |_| {}
+
+	let b = preview.look(mut c, "pv-cache.tmp")
+	let kept = preview.line(c.slots[b], 0)
+
+	fs.set_times("pv-cache.tmp", fs.time_keep(), fs.time(s + 5, 0)) else |_|  {}
+
+	let d = preview.look(mut c, "pv-cache.tmp")
+	let fresh = preview.line(c.slots[d], 0)
+	let made = c.made
+
+	var i = 0
+	while i < 20 {
+		fs.write_text("pv-cache-{i}.tmp", "{i}") else |_| {}
+		let _ = preview.look(mut c, "pv-cache-{i}.tmp")
+		fs.remove("pv-cache-{i}.tmp") else |_| {}
+
+		i += 1
+	}
+
+	fs.remove("pv-cache.tmp") else |_| {}
+
+	assert(a == b && b == d, "one slot: {a} {b} {d}")
+	assert(kept == "old" && fresh == "new", "cached until it changed: {kept} {fresh}")
+	assert(made == 2, "two reads: {made}")
+	assert(c.slots.len == preview.CACHE_SLOTS, "the cache never grouws: {c.slots.len}")
+}
+
+
+
+
+
+
+
+
+
+
+
+

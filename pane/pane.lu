@@ -214,7 +214,7 @@ pub fn find(p: Pane, name: List[byte]) -> int {
 
 /// An `fs.Info` that knows only a kind: what a listing shows for an
 /// entry whose `lstat` failed.
-fn no_info(kind: int) -> fs.Info {
+pub fn no_info(kind: int) -> fs.Info {
 	fs.Info {
 		kind: kind,
 		size: 0,
@@ -736,3 +736,10 @@ pub fn open(mut p: Pane, path: str, keep: str) -> () ! LoadErrors {
 
 	row_of(code)?
 }
+
+
+
+
+
+
+
