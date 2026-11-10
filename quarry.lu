@@ -10,6 +10,7 @@ use grid
 use keys
 use nav
 use pane
+use preview
 use std.env
 use std.fs
 use std.signal
@@ -54,6 +55,8 @@ struct App {
 	active: int,
 	view: nav.View,
 	due_ms: int,
+	cache: preview.Cache,
+	shown: int,
 	home: str,
 	status: List[byte],
 	next_poll_ms: int,
@@ -100,9 +103,12 @@ fn paint(mut a: App) {
 
 		ui.draw(mut a.back, a.look, a.panes[l], a.panes[1 - l], side, a.home, status, KEYBAR)
 
-		if a.view.shows != nav.SHOWS_LISTING {
+		if a.view.shows == nav.SHOWS_FILE  && a.shows >= 0 {
+			ui.draw_preview(mut a.back, a.look, a.cache.slots[a.shown], a.home)
+		} else if a.view.shows != nav.SHOWS_LISTING {
 			let of = str_from_utf8(a.view.of) else ""
 			let why = str_from_utf8(a.view.why) else ""
+
 			ui.draw_note(mut a.back, a.look, of, why, a.home)
 		}
 
@@ -330,6 +336,8 @@ fn go_right(mut a: App) {
 	}
 
 	a.active = to
+
+	viewed(mut a)
 }
 
 /// Left: back into the left pane, or a slide the other way.
@@ -461,6 +469,9 @@ fn poll_disk(mut a: App) {
 			a.dirty = true
 		}
 	}
+
+	// A previewed file that changed is read again.
+	viewed(mut a)
 }
 
 /// Keep the right pane on the item under the left cursor. When the
@@ -492,8 +503,32 @@ fn track(mut a: App, pressed: bool) {
 		nav.follow(mut a.panes, mut a.view)
 	}
 
+	viewed(mut a)
+
 	a.due_ms = -1
 	a.dirty = true
+}
+
+/// When the right pane whows a file, find its preview in the cache, or
+/// make it: one `stat` when the file is unchanged, one bounded read when 
+/// it is new or changed. Called wherever the view may have changed.
+fn viewed(mut a: App) {
+	if a.view.shows != nav.SHOWS_FILE {
+		return
+	}
+
+	let made = a.cache.made
+	var at = a.shown
+
+	region scratch {
+		let path = str_from_utf8(a.view.of) else ""
+		at = preview.look(mut a.cache, path)
+	}
+
+	if at != a.shown || a.cache.made != made {
+		a.shown = at
+		a.dirty = true
+	}
 }
 
 /// Show or hide dot files, in both panes: the right one is a view
@@ -968,6 +1003,8 @@ fn main() -> !int {
 		dirty: true,
 		panes: panes,
 		active: 0,
+		cache: preview.cache(),
+		shown: -1,
 		view: view,
 		due_ms: -1,
 		home: env.get("HOME") else "",
@@ -977,6 +1014,7 @@ fn main() -> !int {
 		copying: job.idle(),
 	}
 
+	viewed(mut a)
 	run(mut a)
 	tty.leave(mut a.t)
 
