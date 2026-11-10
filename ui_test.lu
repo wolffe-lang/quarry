@@ -68,7 +68,7 @@ fn test_the_ghost_marks_the_left_cursor() {
 	ui.draw(mut g, look, p, p, 1, "", "", "")
 
 	let left = ui.head(grid.row_text(g, 1), 40)
-	let right = ui.tail(grid.row.text(g, 1), 40)
+	let right = ui.tail(grid.row_text(g, 1), 40)
 	let ascii = grid.Look { gl: grid.ascii_glyphs(), color: false }
 
 	ui.draw(mut g, ascii, p, p, 1, "", "", "")

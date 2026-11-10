@@ -34,7 +34,7 @@ pub const ITEM_ODD: int = 4
 
 /// Why Right did not move: what is under the cursor, or why the
 /// directory it would go into could not be listed
-pub error RightErrors {file, dangling, utf8, not_found, denied, io}
+pub error RightErrors = {file, dangling, utf8, not_found, denied, io}
 
 /// Why Left did not move: the left pane is at `/`, or its parent could
 /// not be listed.
@@ -154,7 +154,7 @@ pub fn follow(mut panes: List[pane.Pane], mut v: View) {
 
 /// Nothing to refuse for a directory, or for an empty pane; the row for
 /// anything an arrow cannot go into.
-fn refuse(kind: int ) {
+fn refuse(kind: int ) -> () ! RightErrors {
 	if kind == ITEM_FILE {
 		return file
 	}
@@ -209,7 +209,7 @@ pub fn go_right(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! R
 
 	// The slide: the directory is read into the left pane's buffers, and
 	// the two panes trade side.
-	pane.open(mut panes[l], path, "")
+	pane.open(mut panes[l], path, "")?
 	v.left = r
 	v.shows = SHOWS_LISTING
 
@@ -228,7 +228,7 @@ pub fn go_left(mut panes: List[pane.Pane], mut v: View, active: int) -> int ! Le
 	let l = v.left
 	let r = 1 - l
 
-	if active {
+	if active == r{
 		return l
 	}
 
