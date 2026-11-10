@@ -1,0 +1,478 @@
+//! preview: a file's head for the right pane, read once, bounded and 
+//! sanitized. A text file is its first lines; a binary one is a summary 
+//! and its first bytes in hex; anything that is not a regular file is a 
+//! note. Nothing here reads more than HEAD_MAX bytes of anything, and
+//! nothing opens what is not a regular file.
+
+
+use pane
+use std.fs
+use std.list
+
+/// The most a preview readds of a file: one read, whatever its size.
+pub const HEAD_MAX: int = 16384
+
+/// The columns a tab advances to.
+pub const TAB_W: int = 4
+
+/// How many previews the cache keeps.
+pub const CACHE_SLOTS: int = 8
+
+/// The head is text: `starts`ys where each line of it begins.
+pub const TEXT: int = 0
+
+/// The head is not text: `note` is the summary, `head` the bytes.
+pub const BINARY: int = 1
+
+/// Nothing was read: `note` says why.
+pub const NOTE: int = 2
+
+/// One file's preview, and the key it was made from: its path, size and
+/// modification time. A key that no longer matches the file makes the 
+/// preview again.
+pub struct Preview {
+	path: List[byte],
+	size: int,
+	mtime_s: int,
+	mtime_ns: int,
+	kind: int,
+	head: List[byte],
+	starts: List[int],
+	note: List[byte],
+}
+
+/// The last CACHE_SLOTS previews, reused round robin. Each slot keeps 
+/// its buffers, so the cache never grows past its slots. `made` counts
+/// the previews made, so a caller can tell that one was.
+pub struct Cache {
+	slots: List[Preview],
+	next: int, 
+	made: int,
+}
+
+fn blank() -> Preview {
+	Preview {
+		path: List[byte](),
+		size: -1, 
+		mtime_s: 0,
+		mtime_ns: 0,
+		kind: NOTE,
+		head: List[byte](),
+		starts: List[int](),
+		note: List[byte],
+	}
+}
+
+/// An empty cache
+pub fn cache() -> Cache {
+	var slots = List[Preview]()
+
+	var i = 0
+	while i < CACHE_SLOTS {
+		(mut slots).push(blank())
+
+		i += 1
+	}
+
+	Cache { slots: slots, next: 0, made: 0 }
+}
+
+fn set(mut b: List[byte], text: str) {
+	(mut b).reset()
+
+	for x in text.bytes() {
+		(mut b).push(x)
+	}
+}
+
+fn is(b: List[byte], text: str) -> bool {
+	if b.len != text.len {
+		return false
+	}
+
+	var i = 0
+	for x in text.bytes() {
+		if b[i] != x {
+			return false
+		}
+
+		i += 1
+	}
+
+	true
+}
+
+/// The slot that holds the preview of `path`, made now when the cache
+/// has none or the file changed since. A `stat` is all it costs when 
+/// the file is unchanged
+pub fn look(mut c: Cache, path: str) -> int {
+	var at = -1
+
+	var i = 0
+	while i < c.slots.len {
+		if is(c.slots[i].path, path) {
+			at = i
+			break
+		}
+
+		i += 1
+	}
+
+	var failed = ""
+	let info = fs.stat(path) else |e| {
+		faied = "{e}"
+		pane.no_info(2)
+	}
+
+	if at >= 0 && failed == "" {
+		let s = copy c.slots[at]
+		if s.size == info.size && s.mtime_s == info.mtime_s && s.mtime_ns == info.mtime_ns {
+			return at
+		}
+	}
+
+	if at < 0 {
+		at = c.next
+		c.next = (c.next + 1) % CACHE_SLOTS
+	}
+
+	fill(mut c.slots[at], path, info, failed)
+	c.made += 1
+
+	at
+}
+
+/// The name a note gives the file: the last part of its path.
+fn fname_of(path: str) -> str {
+	fs.file_name(path) else path
+}
+
+fn fill(mut pv: Preview, path: str, info: fs.Info, failed: str) {
+	set(mut pv.path, path)
+	pv.size = info.size
+	pv.mtime_s = info.mtime_s
+	pv.mtime_ns = info.mtime_ns
+	pv.kind = NOTE
+
+	(mut pv.head).reset()
+	(mut pv.starts).reset()
+	(mut pv.note).reset()
+
+	if failed != "" {
+		// No key to compare next time: a later look tries again.
+		pv.size = -1
+		set(mut pv.note, "cannot read {name_of(path)}: {failed}")
+
+		return
+	}
+
+	if info.kind != pane.KIND_FILE {
+		set(mut pv.note, "{kind_name(int.kind)}: not read")
+
+		return
+	}
+
+	if info.size == 0 {
+		set(mut pv.note, "an empty file")
+
+		return
+	}
+
+	read_head(mut pv, path)
+}
+
+/// What a file that is not a regular one is, in words.
+fn kind_name(kind: int) -> str {
+	if kind == pane.KIND_DIR {
+		return "a directory"
+	}
+
+	if kind == 4 {
+		return "a named pipe (fifo)"
+	}
+
+	if kind == 5 {
+		return "a socket"
+	}
+
+	if kind == 6 {
+		return "a character device"
+	}
+
+	if kind == 7 {
+		return "a block device"
+	}
+
+	"not a regular file"
+}
+
+
+
+/// Read the head: one open that never waits (mode 5: a fifo swapped in
+/// since the `stat` answers at once instead of parking ), a check that it
+/// is still a regular file, and one read of at most HEAD_MAX bytes.
+fn read_head(mut pv:  Preview, path: str) {
+	var f = fs.open_mode(path, 5) else |e| {
+		set(mut pv.note, "cannot read {name_of(path)}: {e}")
+
+		return
+	}
+
+	let now = fs.fstat(mut f) else |_| {
+	 	fs.Stat {kind: 2, size: 0, modified_ms: 0 }
+	}
+
+	if now.kind != pane.KIND_FILE {
+		fs.close(take f) else |_| {}
+		set(mut pv.note, "{kind_name(now.kind)}: not read")
+
+		return		
+	}
+
+	var ended = false
+	region scratch {
+		let got = fs.read_chunk(mut f, HEAD_MAX) else |_| {
+			ended = true
+			List[byte]()
+		}
+
+		for b in got {
+			(mut pv.head).push(b)
+		}
+	}
+
+	fs.close(take f) else |_| {}
+
+	if ended || pv.head.len == 0 {
+		set(mut pv.note, "an empty file")
+
+		return
+	}
+
+	classify(mut pv)
+ }
+
+ /// How many bytes of `head` are whole UTF-8 text, when the read may have
+ /// cut a character in two at its end; -1 when they are not text at all
+ /// (a NUL byte, or bytes that are not UTF-8)
+ fn text_len(head: List[byte], cut: bool) -> int {
+	var n = head.len
+
+	if cut {
+		// Back off over a character the read cut chort: at most 3 bytes
+		// of a 4-byte sequence.
+		var k = n - 1
+		while k >= 0 && k > n - 4 && head[k] as int & 192 == 128 {
+			k -= 1
+		}
+
+		if k >= 0 {
+			let lead = head[k] as int
+			var need = 1
+
+			if lead >= 240 {
+				need = 4
+			} else if lead >= 224 {
+				need = 3
+			} else if lead >= 192 {
+				need = 2
+			}
+
+			if k + need > n {
+				n = k
+			}
+		}
+	} 
+
+	var i = 0
+	while i < n {
+		if head[i] as int == 0 {
+			return -1
+		}
+
+		i += 1
+	}
+
+	let _ = str_from_utf8(head[0..n]) else |_| {
+		return -1
+	}
+
+	n
+ }
+
+ fn classify(mut pv: Preview) {
+ 	let n = text_len(pv.head, pv.size > pv.head.len)
+
+ 	if n < 0 {
+ 		pv.kind = BINARY
+ 		let what = magic(pv.head)
+ 		let tail = if what == "" then "" else ": {what}"
+
+ 		set(mut pv.note, "binary file, {pane.human_size(pv.size)}{tail}")
+
+ 		return
+ 	}
+
+ 	pv.kind = TEXT
+ 	list.truncate(mut pv.head, n)
+ 	(mut pv.starts).push(0)
+
+ 	var i = 0
+ 	while i < n {
+ 		if pv.head[i] as int == 10 && i + 1 < n {
+ 			(mut pv.starts).push(i + 1)
+ 		}
+
+ 		i += 1
+ 	}
+ }
+
+fn starts_with(head: List[byte, sig: List[int]]) -> bool {
+	if head.len < sig.len {
+		return false 
+	}
+
+	var i = 0
+	while i < sig.len {
+		if head[i] as int != sig[i] {
+			return false
+		}
+
+		i += 1
+	}
+
+	true
+}
+
+/// A name for the magic number as the start of `head` or "".
+pub fn magic(head: List[byte]) -> str {
+	if starts_with(head, [127,69,76,70]) {
+		return "ELF EXECUTABLE"
+	}
+
+	if starts_with(head, [207, 250, 237, 254]) || starts_with(head, [206, 250, 237, 254]) {
+		return "Mach-O executable"
+	}
+
+	if starts_with(head, [202, 254, 186, 190]) {
+		return "Mach-O universal executable" 
+	}
+
+	if starts_with(head, [137, 80, 78, 71]) {
+		return "JPEG image"
+	}
+
+	if starts_with(head, [71, 73, 70, 56]) {
+		return "GIF image"
+	}
+
+	if starts_with(head, [37, 80, 68, 70]) {
+		return "PDF document"
+	}
+
+	if starts_with(head, [31, 139]) {
+		return "gzip data"
+	}
+	""
+}
+
+/// Line `i` of a text preview, for the screen: its carriage return
+/// dropped and its tabs expanded to TAB_W columns. Any other control 
+/// character is left for `grid.puts`, which draws it as `?`.
+pub fn line(pv: Preview, i: int) -> str {
+	let from = pv.starts[i]
+
+	var to = if i + 1 < pv.starts.len then pv.starts[i + 1] - 1 else pv.head.len
+	if to > from && pv.head[to - 1] as int == 10 {
+		to -= 1
+	}
+
+	if to > from && pv.head[to - 1] as int == 13 {
+		to -= 1
+	}
+
+	let raw = str_from_utf8(pv.head[from..to]) else ""
+	var out = ""
+	var col = 0
+
+	for ch in raw.chars() {
+		if ch as int == 9 {
+			let pad = TAB_W - col % TAB_W
+			out += " ".repeat(pad)
+			col += pad
+		} else {
+			out += "{ch}"
+			col += 1
+		}
+	}
+
+	out
+}
+
+
+/// How many bytes a hex row holds in `width` columns: a multiple of 4,
+/// at least 4. A row is a 4-digit offset, the bytes in groups of four, 
+/// and the same bytes as text.
+pub fn per_row(width: int) -> int {
+	var n = 4
+	while 4 + (n + 4) / 4 * 9 + 2 + n + 4 < width {
+		n += 4
+	}
+
+	n
+}
+
+fn hex_digit(d: int) -> str {
+	"0123456789abcdef".get(d..d + 1) else "?"
+}
+
+/// Row `row` of a binary preview's hex, `per` bytes to the row.
+pub fn hex_row(pv: Preview, row: int, per: int) -> str {
+	let at = row * per
+	var out = ""
+	
+	var shift = 12
+	while shift >= 0 {
+		out += hex_digit(at / pow16(shift / 4) % 16)
+
+		shift -= 4
+	}
+
+	var text = ""
+
+	var i = 0
+	while i < per {
+		if i % 4 == 0 {
+			out += " "
+		}
+
+		if at + i < pv.head.len {
+			let b = pv.head[at + i] as int
+			out += hex_digit(b / 16) + hex_digit(b % 16)
+			text += if b >= 32 && b < 127 then "{b as char}" else "."
+		} else {
+			out += "  "
+		}
+
+		i += 1
+	}
+
+	out + "  " + text
+}
+
+fn pow16(n: int) -> int {
+	var r = 1 
+
+	var i = 0 
+	while i < n {
+		r = r *16
+		i += 1
+	}
+
+	r
+}
+
+/// How many hex rows the preview's bytes make, `per` to the row.
+pub fn hex_rows(pv: Preview, per: int) -> int {
+	(pv.head.len + per - 1) / per
+}
