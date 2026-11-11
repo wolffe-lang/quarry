@@ -3,6 +3,7 @@
 //! in 256 KiB chunks; makes links as links; and reports on stdout, one
 //! one line at a time
 //!
+//!		into HEX			the copy of one SRC it will make, under a free name
 //!		total FILES BYTES	once, before the first byte is copied
 //!		file HEX			a destination it is about to write, hex bytes
 //!		bytes N				bytes copied so far
@@ -229,7 +230,69 @@ fn present(path: str) -> bool {
 	true
 }
 
-/// `quarry --worker ARGS...`. Answers the exit code.
+/// The path of `path` with only its directory resolved, so a link is
+/// its own path and not its target's: the worker copies a link as a
+/// link, so a link to a directory may be copied into that directory.
+fn real_parent(path: str) -> str {
+	let dir = fs.parent(path) else "."
+	fs.join(fs.realpath(dir) else dir, fs.file_name(path) else "")
+}
+
+/// The index of the dot before a name's extension, or -1: the last dot,
+/// unless it is the first character (`.hidden` has no extension).
+fn ext_dot(name: str) -> int {
+	var at = -1
+	var i = 0
+
+	for b in name.bytes() {
+		if b as int == 46 && i > 0 {
+			at = i
+		}
+
+		i += 1
+	}
+
+	at
+}
+
+/// A name for a copy of `name` in `dir` that nothing there has yet, and
+/// that is not one of `taken` (the names this copy has chosen already):
+/// `name` itself when it is free, then fortress's `notes-1.txt`,
+/// `notes-2.txt` and so on, the number before the extension (`alpha-1`,
+/// `.hidden-1`). Answers "" when none of the first thousand is free.
+pub fn free_name(dir: str, name: str, taken: List[str]) -> str {
+	let dot = ext_dot(name)
+	var stem = name
+	var ext = ""
+
+	if dot > 0 {
+		stem = name.get(0..dot) else name
+		ext = name.get(dot..name.len) else ""
+	}
+
+	var n = 0
+	while n <= 1000 {
+		let candidate = if n == 0 then name else "{stem}-{n}{ext}"
+		var free = !present(fs.join(dir, candidate))
+
+		for t in taken {
+			if t == candidate {
+				free = false
+			}
+		}
+
+		if free {
+			return candidate
+		}
+
+		n += 1
+	}
+
+	""
+}
+
+/// `quarry --worker ARGS...`. Answers the exit code. Each SRC is copied
+/// under a free name in DEST, which it names on an `into` line first.
 pub fn main(args: List[str]) -> int {
 	if args.len < 3 || args[0] != "copy" {
 		fail("usage: quarry --worker copy DEST SRC...")
@@ -237,26 +300,31 @@ pub fn main(args: List[str]) -> int {
 	}
 
 	let dest = args[1]
+	let real_dest = fs.realpath(dest) else dest
 	var total = Progress { files: 0, bytes: 0 }
 	var buf = List[byte]()
+	var names = List[str]()
 
 	var i = 2
 	while i < args.len {
 		let src = args[i]
-		if dest == src || dest.starts_with(src + "/") {
+		// Real paths, so a link cannot lead a directory into itself.
+		let real_src = real_parent(src)
+		if real_dest == real_src || real_dest.starts_with(real_src + "/") {
 			fail("cannot copy {src} into itself")
 			return 1
 		}
 
-		let name = fs.file_name(src) else ""
-		let dst = fs.join(dest, name)
-
-		if present(dst) {
-			fail("{dst} already exists")
+		let name = free_name(dest, fs.file_name(src) else "", names)
+		if name == "" {
+			fail("no free name in {dest} for {src}")
 			return 1
 		}
 
-		if !walk(src, dst, true, mut total, mut buf) {
+		(mut names).push(name)
+		report("into", fs.join(dest, name))
+
+		if !walk(src, fs.join(dest, name), true, mut total, mut buf) {
 			return 1
 		}
 		
@@ -268,10 +336,7 @@ pub fn main(args: List[str]) -> int {
 
 	i = 2
 	while i < args.len {
-		let src = args[i]
-		let dst = fs.join(dest, fs.file_name(src) else "")
-
-		if !walk(src, dst, false, mut done, mut buf) {
+		if !walk(args[i], fs.join(dest, names[i - 2]), false, mut done, mut buf) {
 			return 1
 		}
 
