@@ -54,3 +54,41 @@ fn test_permille_without_bytes_counts_files() {
 
 	assert(job.permille(j) == 1000, "never past the end")
 }
+
+fn test_an_into_line_names_the_copy() {
+	var j = job.idle()
+	let first = "/home/me/src/notes-1.txt"
+	job.take_line(mut j, "into {hex.encode(first.bytes())}")
+	job.take_line(mut j, "into {hex.encode("/home/me/src/zz.txt".bytes())}")
+
+	assert((str_from_utf8(j.into) else "") == first, "the first copy's path")
+}
+
+fn test_the_queue_keeps_its_order_and_gives_back_its_room() {
+	var q = job.queue()
+	var one = List[str]()
+	(mut one).push("/a/one")
+	(mut one).push("/a/two")
+	job.enqueue(mut q, "/dest", one)
+
+	var two = List[str]()
+	(mut two).push("/b/three")
+	job.enqueue(mut q, "/other", two)
+
+	let waiting = q.count
+	let first = job.dequeue(mut q)
+	let left = q.pool.len
+	let second = job.dequeue(mut q)
+	let none = job.dequeue(mut q)
+
+	assert(waiting == 2, "two waiting: {waiting}")
+	assert(first.len == 3 && first[0] == "/dest" && first[2] == "/a/two", "the first copy")
+	assert(left == "/other".len + "/b/three".len + 3, "the pool holds only what waits: {left}")
+	assert(second.len == 2 && second[1] == "/b/three", "then the second")
+	assert(none.len == 0 && q.count == 0 && q.pool.len == 0, "then none")
+
+	job.enqueue(mut q, "/x", two)
+	job.drop_all(mut q)
+
+	assert(q.count == 0 && q.pool.len == 0, "dropped")
+}
