@@ -31,10 +31,10 @@ const POLL_MS: int = 1000
 const SETTLE_MS: int = 60
 
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " F4 Edit  F5 Copy  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  . Hidden  q Quit"
+const KEYBAR: str = " F4 Edit  F5 Copy  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  ? Help  q Quit"
 
 /// The last row in copy mode.
-const COPYBAR: str = " COPY  arrows choose a place  Enter Paste  F7 Mkdir  Esc Cancel"
+const COPYBAR: str = " COPY  arrows choose a place  Enter Paste  F7 Mkdir  ? Help  Esc Cancel"
 
 /// What a dialog's yes does: rename the entry under the cursor.
 const ACT_MKDIR: int = 1
@@ -71,6 +71,7 @@ struct App {
 	payload: paste.Payload,
 	back_to: nav.Spot,
 	land: List[byte],
+	help: bool,
 	home: str,
 	status: List[byte],
 	next_poll_ms: int,
@@ -139,6 +140,9 @@ fn paint(mut a: App) {
 
 		if a.dlg.kind != dialog.NONE {
 			ui.draw_dialog(mut a.back, a.look, a.dlg)
+		}
+		if a.help {
+			ui.draw_help(mut a.back, a.look)
 		}
 		
 		let _ = grid.render(a.front, a.back, mut a.out)	
@@ -972,6 +976,18 @@ fn on_key(mut a: App, k: keys.Key) {
 	}
 
 	(mut a.status).reset()
+
+	// Help is up: any key puts it away, and does nothing else.
+	if a.help {
+		a.help = false
+		return
+	}
+
+	if k.code == 63 && k.mods == 0 || k.code == keys.K_F0 + 1 {
+		a.help = true
+		return
+	}
+
 	if a.copy_mode && copy_key(mut a, k) {
 		return
 	}
@@ -1186,6 +1202,7 @@ fn main() -> !int {
 		payload: paste.none(),
 		back_to: nav.no_spot(),
 		land: List[byte](),
+		help: false,
 		home: env.get("HOME") else "",
 		status: List[byte](),
 		next_poll_ms: now_ms() + POLL_MS,
