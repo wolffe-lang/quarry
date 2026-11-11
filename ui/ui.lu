@@ -668,6 +668,80 @@ pub fn draw_sticky(mut g: grid.Grid, look: grid.Look, p: pane.Pane, side: int, p
 	}
 }
 
+/// The key table that `?` and F1 show.
+fn help_lines() -> List[str] {
+	[
+		"quarry's keys",
+		"",
+		"Up Down PgUp PgDn Home End   move the cursor",
+		"Right    into the right pane; at its edge, slide",
+		"Left     back into the left pane; there, slide back",
+		"Enter    a directory: as Right. A file: edit it",
+		"Tab      the cursor across    Backspace  as Left",
+		"F4 e     edit                 F5 c       copy mode",
+		"F6       rename               F7         make a directory",
+		"F8 Del   delete               Space Ins  mark",
+		".        dot files            Ctrl-R     read again",
+		"Esc      stop a copy          q F10      quit",
+		"",
+		"In copy mode the arrows move the mobile cursor,",
+		"Enter pastes, and Esc goes back to where you began.",
+		"",
+		"Any key closes this.",
+	]
+}
+
+/// Help, over everything else: the key table in a framed box in the
+/// middle of the screen, clipped like every other drawing.
+pub fn draw_help(mut g: grid.Grid, look: grid.Look) {
+	let lines = help_lines()
+
+	var w = 0
+	for l in lines {
+		if cells(l) > w {
+			w = cells(l)
+		}
+	}
+
+	w += 4
+	if w > g.cols {
+		w = g.cols
+	}
+
+	var h = lines.len + 2
+	if h > g.rows {
+		h = g.rows
+	}
+
+	let top = (g.rows - h) / 2
+	let left = (g.cols - w) / 2
+
+	var r = 0
+	while r < h {
+		grid.fill(mut g, top + r, left, w, 32, grid.DEFAULT, grid.DEFAULT, 0)
+
+		r += 1
+	}
+
+	grid.frame(mut g, top, left, h, w, look.gl, col(look, CYAN + 8))
+
+	var i = 0
+	while i < lines.len && i < h - 2 {
+		let attr = if i == 0 then grid.ATTR_BOLD else 0
+		let _ = grid.puts(
+			mut g,
+			top + 1 + i,
+			left + 2,
+			w - 4,
+			lines[i],
+			grid.DEFAULT,
+			grid.DEFAULT,
+			attr,
+		)
+
+		i += 1
+	}
+}
 
 
 
