@@ -1,10 +1,12 @@
 //! job: the UI's side of a background copy. It starts quarry itself as a 
 //! worker with stdout and stderr on a pipe, reads the worker's lines
 //! when the pipe is ready, and keeps the numbers the progress bar needs.
-//! Nothing is shared with the worker, so nothing can race
+//! Nothing is shared with the worker, so nothing can race. Copies that
+//! wait their turn wait in a `Queue`
 
 use std.fs
 use std.hex
+use std.list
 use std.process
 
 /// One background copy, or none (`running` false).
@@ -21,6 +23,8 @@ pub struct Job {
 	failure: List[byte],
 	cancelled: bool,
 	status: int,
+	first: List[byte],
+	into: List[byte],
 }
 
 /// No job.
@@ -38,6 +42,8 @@ pub fn idle() -> Job {
 		failure: List[byte](),
 		cancelled: false,
 		status: 0,
+		first: List[byte](),
+		into: List[byte](),
 	}
 }
 
@@ -103,6 +109,8 @@ pub fn start(mut j: Job, exe: str, dest: str, sources: List[str]) -> () ! StartE
 	(mut j.line).reset()
 	(mut j.current).reset()
 	(mut j.failure).reset()
+	(mut j.into).reset()
+	set_bytes(mut j.first, fs.file_name(sources.get(0) else "") else "")
 }
 
 fn set_bytes(mut dst: List[byte], text: str) {
@@ -132,6 +140,13 @@ pub fn take_line(mut j: Job, line: str) {
 		j.files += 1
 	} else if kind == "bytes" {
 		j.bytes = (words.get(1) else "0").to_int() else 0
+	} else if kind == "into" {
+		// The first copy's path, under the name the worker chose.
+		if j.into.len == 0 {
+			for b in hex.decode(words.get(1) else "") else List[byte]() {
+				(mut j.into).push(b)
+			}
+		}
 	} else if kind == "done" || kind == "skip" {
 		// nothing to keep
 	} else if kind == "error" {
@@ -226,4 +241,82 @@ pub fn permille(j: Job) -> int {
 	}
 
 	0
+}
+
+/// Copies waiting their turn, in one byte pool: each is its destination
+/// and its sources, every path ended by a 0 byte (no path holds one) and
+/// the copy by one more. Taking one shifts the rest down in place, so the
+/// pool is never bigger than the copies that wait.
+pub struct Queue {
+	pool: List[byte],
+	count: int,
+}
+
+/// No copies waiting.
+pub fn queue() -> Queue {
+	Queue { pool: List[byte](), count: 0 }
+}
+
+/// Put a copy of `sources` into `dest` at the back of the queue.
+pub fn enqueue(mut q: Queue, dest: str, sources: List[str]) {
+	for b in dest.bytes() {
+		(mut q.pool).push(b)
+	}
+
+	(mut q.pool).push(0 as byte)
+
+	for s in sources {
+		for b in s.bytes() {
+			(mut q.pool).push(b)
+		}
+
+		(mut q.pool).push(0 as byte)
+	}
+
+	(mut q.pool).push(0 as byte)
+	q.count += 1
+}
+
+/// Take the copy at the front: its destination first, then its sources,
+/// built in the caller's region. Empty when none waits.
+pub fn dequeue(mut q: Queue) -> List[str] {
+	var out = List[str]()
+
+	if q.count == 0 {
+		return out
+	}
+
+	var start = 0
+	var i = 0
+	while i < q.pool.len {
+		if q.pool[i] as int == 0 {
+			if i == start {
+				break
+			}
+
+			(mut out).push(str_from_utf8(q.pool[start..i]) else "")
+			start = i + 1
+		}
+
+		i += 1
+	}
+
+	let used = i + 1
+	var k = used
+	while k < q.pool.len {
+		q.pool[k - used] = q.pool[k]
+
+		k += 1
+	}
+
+	list.truncate(mut q.pool, q.pool.len - used)
+	q.count -= 1
+
+	out
+}
+
+/// Drop every copy that waits.
+pub fn drop_all(mut q: Queue) {
+	(mut q.pool).reset()
+	q.count = 0
 }
