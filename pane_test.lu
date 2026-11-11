@@ -326,6 +326,12 @@ fn test_a_vanished_name_leaves_the_cursor_on_its_row() {
 		assert(false, "reload failed")
 	}
 
+	let next = pane.display_name(p, p.cursor)
+	fs.remove("pt-row.tmp/zeta.txt") else |_| {}
+	pane.load(mut p) else |_| {
+		assert(false, "reload failed")
+	}
+
 	let last = pane.display_name(p, p.cursor)
 	fs.remove_dir_all("pt-row.tmp") else |_| {}
 
