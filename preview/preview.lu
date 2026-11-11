@@ -18,6 +18,9 @@ pub const TAB_W: int = 4
 /// How many previews the cache keeps.
 pub const CACHE_SLOTS: int = 8
 
+/// How many rows of hex a binary preview shows under its summary.
+pub const HEX_ROWS: int = 6
+
 /// The head is text: `starts`ys where each line of it begins.
 pub const TEXT: int = 0
 
