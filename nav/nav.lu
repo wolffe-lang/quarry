@@ -285,7 +285,7 @@ pub fn mark_spot(mut s: Spot, panes: List[pane.Pane], v: View, active: int) {
 /// Put the panes and the cursor back where `s` says, as far as the disk
 /// still allows: a directory that has gone leaves the cursor where it is.
 /// Answers the pane that has the cursor.
-pub fn got_to(mut panes: List[pane.Pane], mut v: View, s: Spot, active: int) -> int {
+pub fn go_to(mut panes: List[pane.Pane], mut v: View, s: Spot, active: int) -> int {
 	let l = v.left
 	let path = str_from_utf8(s.path) else ""
 
