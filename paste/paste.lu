@@ -35,7 +35,7 @@ pub struct Payload {
 	dir: List[byte],
 	real: List[byte],
 	pool: List[byte], 
-	ends: List[byte],
+	ends: List[int],
 }
 
 /// What Enter would do: one of the rules above, the directory a pate
@@ -64,7 +64,7 @@ pub fn clear(mut pl: Payload) {
 	(mut pl.dir).reset()
 	(mut pl.real).reset()
 	(mut pl.pool).reset()
-	(mut pl.ends).reseT()
+	(mut pl.ends).reset()
 }
 
 /// How many items are being copied.
@@ -185,7 +185,7 @@ fn inside(pl: Payload, dest: str) -> bool {
 pub fn decide(pl: Payload, p: pane.Pane, in_right: bool) -> Choice {
 	var c = Choice { rule: NOWHERE, dest: "", near: "" }
 
-	if p.cursor >= p.etries.len {
+	if p.cursor >= p.entries.len {
 		if in_right {
 			c.rule = HERE
 			c.dest = pane.path_of(p)
@@ -198,7 +198,7 @@ pub fn decide(pl: Payload, p: pane.Pane, in_right: bool) -> Choice {
 			c.dest = pane.child_path(p, p.cursor) else ""
 		} else if in_right {
 			c.rule = BESIDE
-			c.desst = pane.path_of(p)
+			c.dest = pane.path_of(p)
 		} else {
 			c.rule = FROM_LEFT
 		}
@@ -236,7 +236,7 @@ pub fn hint(pl: Payload, c: Choice) -> str {
 	}
 
 	if c.rule == ITSELF {
-		return head + "cannot pate {it} into " + (if one then "itself" else "one of them")
+		return head + "cannot paste {it} into " + (if one then "itself" else "one of them")
 	}
 
 	head + "nothing to paste onto here"
