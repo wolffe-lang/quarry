@@ -374,6 +374,10 @@ pub fn magic(head: List[byte]) -> str {
 		return "PDF document"
 	}
 
+	if starts_with(head, [80, 75, 3, 4]) {
+		return "zip archive"
+	}
+
 	if starts_with(head, [31, 139]) {
 		return "gzip data"
 	}
