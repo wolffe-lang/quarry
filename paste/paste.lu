@@ -18,6 +18,10 @@ pub const BESIDE: int = 2
 /// Enter pastes into the directory the right pane lists, which is empty.
 pub const HERE: int = 3
 
+/// Refused: a file in the left pane. A paste beside a file is picked in
+/// the right pane.
+pub const FROM_LEFT: int = -1
+
 /// Refused: the place is a directory being copied, or inside one.
 pub const ITSELF: int = -2
 
