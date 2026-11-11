@@ -118,6 +118,43 @@ fn test_a_preview_in_the_right_pane() {
 	assert(two == "│     - flour                          │", "line 2: {two}")
 }
 
+fn test_a_binary_preview_is_its_summary_and_six_rows() {
+	// 2000 bytes make 250 rows of 8, far more than the pane holds
+	var bytes = List[byte]()
+	var i = 0
+	while i < 2000 {
+		(mut bytes).push((i % 256) as byte)
+		i += 1
+	}
+	fs.write_bytes("ut-binary.tmp", bytes) else |_| {}
+	var c = preview.cache()
+	let at = preview.look(mut c, "ut-binary.tmp")
+	var g = grid.new(24, 80)
+	let look = grid.Look { gl: grid.box_glyphs(), color: false }
+	let p = pane.new("/")
+	ui.draw(mut g, look, p, p, 0, "", "", "")
+	ui.draw_preview(mut g, look, c.slots[at], "")
+	let blank = "│" + " ".repeat(38) + "│"
+	var used = 0
+	var last = 0
+	var r = 1
+	while r <= 20 {
+		if ui.tail(grid.row_text(g, r), 40) != blank {
+			used += 1
+			last = r
+		}
+		r += 1
+	}
+	let summary = ui.tail(grid.row_text(g, 1), 40)
+	let first = ui.tail(grid.row_text(g, 3), 40)
+	let sixth = ui.tail(grid.row_text(g, 8), 40)
+	fs.remove("ut-binary.tmp") else |_| {}
+	assert(summary.starts_with("│ binary file, "), "summary: {summary}")
+	assert(first.starts_with("│ 0000 00010203 04050607"), "first row: {first}")
+	assert(sixth.starts_with("│ 0028 28292a2b 2c2d2e2f"), "sixth row: {sixth}")
+	assert(used == 7 && last == 8, "the summary and six rows: {used} rows used, the last {last}")
+}
+
 fn test_sticky_rows_in_copy_mode() {
 	fs.remove_dir_all("ut-sticky.tmp") else |_| {}
 	fs.create_dir_all("ut-sticky.tmp/docs") else |_| {}
