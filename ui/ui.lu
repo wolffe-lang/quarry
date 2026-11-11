@@ -458,8 +458,9 @@ pub fn draw_dialog(mut g: grid.Grid, look: grid.Look, d: dialog.Dialog) {
 	}
 }
 
-/// The status line while a copy runs: how far, as a bar and in numbers.
-pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job) {
+/// The status line while a copy runs: how far, as a bar and in numbers,
+/// and how many copies wait behind it.
+pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job, waiting: int) {
 	if g.cols < MIN_COLS || g.rows < MIN_ROWS {
 		return
 	}
@@ -470,7 +471,8 @@ pub fn draw_progress(mut g: grid.Grid, look: grid.Look, j: job.Job) {
 
 	let pm = job.permille(j)
 	let label = " Copy {j.files}/{j.total_files} "
-	let numbers = " {pm / 10}% {pane.human_size(j.bytes)} of {pane.human_size(j.total_bytes)}  Esc cancels"
+	let more = if waiting > 0 then "  {waiting} waiting" else ""
+	let numbers = " {pm / 10}% {pane.human_size(j.bytes)} of {pane.human_size(j.total_bytes)}{more}  Esc stops"
 	var c = 1
 
 	c += grid.puts(
