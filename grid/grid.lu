@@ -109,6 +109,27 @@ pub fn assign(mut dst: Grid, src: Grid) {
 	}
 }
 
+/// Copy `src`'s cells in rows r0..r1, columns c0..c1, into `dst` in
+/// place: that part of the screen was written, the rest still shows what
+/// it showed. Grids of different sizes are copied whole.
+pub fn assign_part(mut dst: Grid, src: Grid, r0: int, r1: int, c0: int, c1: int) {
+	if dst.rows != src.rows || dst.cols != src.cols {
+		assign(mut dst, src)
+		return
+	}
+
+	var r = r0
+	while r < r1 && r < src.rows {
+		var c = c0
+		while c < c1 && c < src.cols {
+			dst.cells[r * src.cols + c] = src.cells[r * src.cols + c]
+			c += 1
+		}
+
+		r += 1
+	}
+}
+
 /// Every cell blank again.
 pub fn clear(mut g: Grid) {
 	var i = 0

@@ -64,11 +64,11 @@ fn set_pen(mut out: List[byte], mut pen: Pen, c: Cell) {
 	pen.attr = c.attr
 }
 
-/// True when back's cells c..c+3 (within the row) hold a change.
-fn change_soon(front: Grid, back: Grid, r: int, c: int) -> bool {
+/// True when back's cells c..c+3 (within the row, before `end`) hold a change.
+fn change_soon(front: Grid, back: Grid, r: int, c: int, end: int) -> bool {
 	var k = c
 
-	while k < c + 4 && k < back.cols {
+	while k < c + 4 && k < end {
 		if !same(cell_at(front, r, k), cell_at(back, r, k)) {
 			return true
 		}
@@ -100,19 +100,28 @@ fn blank_tail(back: Grid, r: int, c: int) -> bool {
 /// changed). The bottom-right cell is never written, so no terminal
 /// scrolls. The grids must be the same size
 pub fn render(front: Grid, back: Grid, mut out: List[byte]) -> int {
+	render_part(front, back, mut out, 0, back.rows, 0, back.cols)
+}
+
+/// `render` for rows r0..r1 and columns c0..c1 only: nothing outside
+/// them is touched. An erase to the end of the line is used only when the
+/// part reaches the right edge, so it never reaches past the part.
+pub fn render_part(front: Grid, back: Grid, mut out: List[byte], r0: int, r1: int, c0: int, c1: int) -> int {
 	let start = out.len
 	var pen = Pen { fg: -2, bg: -2, attr: -1 }
-	var r = 0
+	let edge = c1 >= back.cols
+	let end = if edge then back.cols else c1
+	var r = r0
 
-	while r < back.rows {
+	while r < r1 && r < back.rows {
 		var cursor = -1
-		var c = 0
-		let last = if r == back.rows - 1 then back.cols - 1 else back.cols
+		var c = c0
+		let last = if r == back.rows - 1 && edge then back.cols - 1 else end
 
 		while c < last {
 			let want = cell_at(back, r, c)
 			let changed = !same(cell_at(front, r, c), want)
-			if changed && back.cols - c >= 6 && blank_tail(back, r, c,) {
+			if changed && edge && back.cols - c >= 6 && blank_tail(back, r, c,) {
 				// Everything from here is bank: erase to the end of the line.
 				if cursor != c { push_str(mut out, "\x1b[{r + 1};{c + 1}H") }
 				set_pen(mut out, mut pen, blank())
@@ -121,7 +130,7 @@ pub fn render(front: Grid, back: Grid, mut out: List[byte]) -> int {
 				break
 			}
 
-			if changed || cursor == c && change_soon(front, back, r, c + 1) {
+			if changed || cursor == c && change_soon(front, back, r, c + 1, end) {
 				if cursor != c {
 					push_str(mut out, "\x1b[{r + 1};{c + 1}H")
 				}
