@@ -10,6 +10,7 @@ use grid
 use keys
 use nav
 use pane
+use paste
 use preview
 use std.env
 use std.fs
@@ -30,7 +31,10 @@ const POLL_MS: int = 1000
 const SETTLE_MS: int = 60
 
 /// The last row of the screen: what the keys do.
-const KEYBAR: str = " F4 Edit  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  ^R Reload  q Quit"
+const KEYBAR: str = " F4 Edit  F5 Copy  F6 Rename  F7 Mkdir  F8 Delete  Space Mark  . Hidden  q Quit"
+
+/// The last row in copy mode.
+const COPYBAR: str = " COPY  arrows choose a place  Enter Paste  F7 Mkdir  Esc Cancel"
 
 /// What a dialog's yes does: rename the entry under the cursor.
 const ACT_MKDIR: int = 1
@@ -57,6 +61,10 @@ struct App {
 	due_ms: int,
 	cache: preview.Cache,
 	shown: int,
+	copy_mode: bool,
+	payload: paste.Payload,
+	back_to: nav.Spot,
+	land: List[byte],
 	home: str,
 	status: List[byte],
 	next_poll_ms: int,
@@ -96,14 +104,15 @@ fn paint(mut a: App) {
 
 		pane.settle(mut a.panes[0], rows)
 		pane.settle(mut a.panes[1], rows)
-
-		let status = str_from_utf8(a.status) else ""
+		var status = str_from_utf8(a.status) else ""
+		if status == "" && a.copy_mode {
+			status = copy_hint(a)
+		}
+		let bar = if a.copy_mode then COPYBAR else KEYBAR
 		let l = a.view.left
 		let side = if a.active == l then 0 else 1
-
-		ui.draw(mut a.back, a.look, a.panes[l], a.panes[1 - l], side, a.home, status, KEYBAR)
-
-		if a.view.shows == nav.SHOWS_FILE  && a.shown >= 0 {
+		ui.draw(mut a.back, a.look, a.panes[l], a.panes[1 - l], side, a.home, status, bar)
+		if a.view.shows == nav.SHOWS_FILE && a.shown >= 0 {
 			ui.draw_preview(mut a.back, a.look, a.cache.slots[a.shown], a.home)
 		} else if a.view.shows != nav.SHOWS_LISTING {
 			let of = str_from_utf8(a.view.of) else ""
@@ -111,7 +120,12 @@ fn paint(mut a: App) {
 
 			ui.draw_note(mut a.back, a.look, of, why, a.home)
 		}
-
+		if a.copy_mode {
+			ui.draw_sticky(mut a.back, a.look, a.panes[l], 0, a.payload)
+			if a.view.shows == nav.SHOWS_LISTING {
+				ui.draw_sticky(mut a.back, a.look, a.panes[1 - l], 1, a.payload)
+			}
+		}
 		if a.copying.running {
 			ui.draw_progress(mut a.back, a.look, a.copying)
 		}
@@ -676,48 +690,137 @@ fn act(mut a: App) {
 	}
 }
 
-/// F5: copy the targets into the other pane's directory, in the
-/// background.
-fn start_copy(mut a: App) {
+/// Start the payload's copy into `dest`, in the background, with the
+/// first guide's worker. Answers false, having said why, when it can't.
+fn start_copy(mut a: App, dest: str) -> bool {
 	if a.copying.running {
 		say(mut a, "a copy is already running")
-		return
+		return false
 	}
-
-	let src = a.active
-	let dest = pane.path_of(a.panes[1 - src])
-
-	if dest == pane.path_of(a.panes[src]) {
-		say(mut a, "both panes show this directory; point the other one elsewhere")
-		return 
-	}
-
-	var sources = List[str]()
-
-	for i in pane.targets(a.panes[src]) {
-		let path = pane.child_path(a.panes[src], i) else |_| {
-			say(mut a, "quarry cannot reach a name that is not UTF-8")
-			return
-		}
-
-		(mut sources).push(path)		
-	}
-
-	if sources.len == 0 {
-		return 
-	}
-
 	let exe = os_exe() else |_| {
 		say(mut a, "cannot find quarry's own program to start the copy")
-		return
+		return false
 	}
-
-	job.start(mut a.copying, exe, dest, sources) else |e| {
+	job.start(mut a.copying, exe, dest, paste.sources(a.payload)) else |e| {
 		say(mut a, "cannot start the copy: {e}")
+		return false
+	}
+	true
+}
+
+/// F5: copy mode. The item under the cursor, or the marked ones, are the
+/// payload, drawn sticky where they are; the cursor is the mobile cursor
+/// from here on. Escape will come back to this spot.
+fn enter_copy(mut a: App) {
+	if paste.collect(mut a.payload, a.panes[a.active]) == 0 {
+		if nav.under(a.panes[a.active]) == nav.ITEM_ODD {
+			say(mut a, "quarry cannot reach a name that is not UTF-8")
+		}
 		return
 	}
+	nav.mark_spot(mut a.back_to, a.panes, a.view, a.active)
+	a.copy_mode = true
+}
 
-	pane.clear_marks(mut a.panes[src])
+/// Copy mode is over.
+fn leave_copy(mut a: App) {
+	a.copy_mode = false
+	paste.clear(mut a.payload)
+}
+
+/// Escape (or `q`, or Ctrl-C) in copy mode: the mobile cursor goes, and
+/// the sticky one is the cursor again, where copy mode began.
+fn cancel_copy(mut a: App) {
+	a.active = nav.go_to(mut a.panes, mut a.view, a.back_to, a.active)
+	viewed(mut a)
+	leave_copy(mut a)
+	say(mut a, "copy cancelled")
+}
+
+/// What Enter would do from where the mobile cursor is, in words.
+fn copy_hint(a: App) -> str {
+	let c = paste.decide(a.payload, a.panes[a.active], a.active != a.view.left)
+	paste.hint(a.payload, c)
+}
+
+/// Enter in copy mode: paste where the mobile cursor is, by `paste`'s
+/// rules, or say why not and stay in copy mode. A paste into a directory
+/// opens it in the right pane.
+fn paste_here(mut a: App) {
+	let p = a.active
+	let c = paste.decide(a.payload, a.panes[p], p != a.view.left)
+	if c.rule < 0 {
+		say(mut a, paste.hint(a.payload, c))
+		return
+	}
+	for src in paste.sources(a.payload) {
+		if !present(src) {
+			say(mut a, "{fs.file_name(src) else src} is gone")
+			leave_copy(mut a)
+			return
+		}
+	}
+	if !start_copy(mut a, c.dest) {
+		return
+	}
+	// When the copy is done, its directory's listing puts a cursor on it.
+	(mut a.land).reset()
+	for b in fs.join(c.dest, paste.name(a.payload, 0)).bytes() {
+		(mut a.land).push(b)
+	}
+	var i = 0
+	while i < 2 {
+		if paste.shows(a.payload, a.panes[i]) {
+			pane.clear_marks(mut a.panes[i])
+		}
+		i += 1
+	}
+	leave_copy(mut a)
+	if c.rule == paste.INTO {
+		a.active = nav.bring_left(mut a.panes, mut a.view, p)
+	}
+}
+
+/// A key in copy mode. Answers true when copy mode took it: Enter,
+/// Escape and `q`, and the keys that would act on files, which wait.
+/// The rest (the arrows, Tab, `.`, Ctrl-R, F7, F10) do what they always
+/// do, with the mobile cursor.
+fn copy_key(mut a: App, k: keys.Key) -> bool {
+	let c = k.code
+	let plain = k.mods == 0
+	if c == keys.K_ENTER {
+		paste_here(mut a)
+		return true
+	}
+	if c == keys.K_ESC || c == 113 && plain {
+		cancel_copy(mut a)
+		return true
+	}
+	let f = c - keys.K_F0
+	let busy = f == 4 || f == 5 || f == 6 || f == 8 || c == keys.K_DEL || c == keys.K_INS
+	if busy || plain && (c == 32 || c == 99 || c == 101) {
+		say(mut a, "Enter pastes, Esc cancels")
+		return true
+	}
+	false
+}
+
+/// The copy is done: the pane that shows its directory puts its cursor
+/// on it, so the copy is under a cursor when you look.
+fn land(mut a: App) {
+	if a.land.len == 0 {
+		return
+	}
+	let path = str_from_utf8(a.land) else ""
+	let dir = fs.parent(path) else ""
+	let name = fs.file_name(path) else ""
+	let r = 1 - a.view.left
+	if a.view.shows == nav.SHOWS_LISTING && pane.path_of(a.panes[r]) == dir {
+		let _ = pane.cursor_to(mut a.panes[r], name)
+	} else if pane.path_of(a.panes[a.view.left]) == dir {
+		let _ = pane.cursor_to(mut a.panes[a.view.left], name)
+	}
+	(mut a.land).reset()
 }
 
 /// The worker ended: say how, remove what a cancel left behind, reload.
@@ -739,6 +842,7 @@ fn finish_copy(mut a: App) {
 
 	reload(mut a, 0)
 	reload(mut a, 1)
+	land(mut a)
 	a.dirty = true
 }
 
@@ -810,6 +914,9 @@ fn on_key(mut a: App, k: keys.Key) {
 	}
 
 	(mut a.status).reset()
+	if a.copy_mode && copy_key(mut a, k) {
+		return
+	}
 	let page = ui.list_rows(a.t.rows) - 1
 	let c = k.code
 	let plain = k.mods == 0
@@ -849,6 +956,8 @@ fn on_key(mut a: App, k: keys.Key) {
 		ask_delete(mut a)
 	} else if c == keys.K_F0 + 4 || c == 101 && plain {
 		edit_file(mut a)
+	} else if c == keys.K_F0 + 5 || c == 99 && plain {
+		enter_copy(mut a)
 	} else if c == keys.K_ESC && a.copying.running {
 		job.cancel(mut a.copying)
 		say(mut a, "cancelling the copy")
@@ -907,10 +1016,16 @@ fn run(mut a: App) {
 		if meaning & signal.resize() != 0 {
 			resized(mut a)
 		}
-
-		// Ctrl-C closes an open dialog instead of quitting.
-		if meaning & signal.interrupt() != 0 && a.dlg.kind != dialog.NONE {
-			dialog.close(mut a.dlg)
+		// Ctrl-C closes an open dialog, or leaves copy mode, instead of
+		// quitting.
+		if meaning & signal.interrupt() != 0 && (a.dlg.kind != dialog.NONE || a.copy_mode) {
+			if a.dlg.kind != dialog.NONE {
+				dialog.close(mut a.dlg)
+			} else {
+				region scratch {
+					cancel_copy(mut a)
+				}
+			}
 			meaning = meaning & !signal.interrupt()
 			a.dirty = true
 		}
@@ -1007,6 +1122,10 @@ fn main() -> !int {
 		shown: -1,
 		view: view,
 		due_ms: -1,
+		copy_mode: false,
+		payload: paste.none(),
+		back_to: nav.no_spot(),
+		land: List[byte](),
 		home: env.get("HOME") else "",
 		status: List[byte](),
 		next_poll_ms: now_ms() + POLL_MS,
