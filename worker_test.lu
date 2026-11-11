@@ -112,7 +112,7 @@ fn test_a_copy_matches_byte_for_byte() {
 	)
 }
 
-fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
+fn test_main_refuses_a_copy_into_itself_and_names_a_free_copy() {
 	build("wt-refuse.tmp")
 
 	let base = fs.realpath("wt-refuse.tmp") else ""
@@ -124,6 +124,17 @@ fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
 
 	let itself = worker.main(into)
 
+	// Through a link, the destination is still inside the source.
+	fs.symlink("src/sub", "wt-refuse.tmp/via") else |_| {}
+
+	var via = List[str]()
+
+	(mut via).push("copy")
+	(mut via).push(base + "/via")
+	(mut via).push(base + "/src")
+
+	let through = worker.main(via)
+
 	fs.create_dir_all("wt-refuse.tmp/dest/src") else |_| {}
 
 	var over = List[str]()
@@ -132,7 +143,8 @@ fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
 	(mut over).push(base + "/dest")
 	(mut over).push(base + "/src")
 
-	let exists = worker.main(over)
+	let beside = worker.main(over)
+	let copied = fs.read_text("wt-refuse.tmp/dest/src-1/a.txt") else "?"
 	var usage = List[str]()
 	(mut usage).push("move")
 
@@ -141,6 +153,66 @@ fn test_main_refuses_a_copy_into_itself_or_over_a_name() {
 	fs.remove_dir_all("wt-refuse.tmp") else |_| {}
 
 	assert(itself == 1, "into itself: {itself}")
-	assert(exists == 1, "over a name: {exists}")
+	assert(through == 1, "into itself through a link: {through}")
+	assert(beside == 0 && copied == "alpha", "over a name, a free one: {beside} {copied}")
 	assert(wrong == 2, "usage: {wrong}")
+}
+
+fn test_a_free_name_as_fortress_makes_one() {
+	fs.remove_dir_all("wt-free.tmp") else |_| {}
+	fs.create_dir_all("wt-free.tmp/alpha") else |_| {}
+	fs.write_text("wt-free.tmp/notes.txt", "n") else |_| {}
+	fs.write_text("wt-free.tmp/notes-1.txt", "n") else |_| {}
+	fs.write_text("wt-free.tmp/.hidden", "h") else |_| {}
+	fs.write_text("wt-free.tmp/archive.tar.gz", "z") else |_| {}
+
+	let none = List[str]()
+	let notes = worker.free_name("wt-free.tmp", "notes.txt", none)
+	let alpha = worker.free_name("wt-free.tmp", "alpha", none)
+	let hidden = worker.free_name("wt-free.tmp", ".hidden", none)
+	let tar = worker.free_name("wt-free.tmp", "archive.tar.gz", none)
+	let fresh = worker.free_name("wt-free.tmp", "new.txt", none)
+
+	var taken = List[str]()
+	(mut taken).push("alpha-1")
+
+	let second = worker.free_name("wt-free.tmp", "alpha", taken)
+
+	fs.remove_dir_all("wt-free.tmp") else |_| {}
+
+	assert(notes == "notes-2.txt" && alpha == "alpha-1", "{notes} {alpha}")
+	assert(hidden == ".hidden-1" && tar == "archive.tar-1.gz", "{hidden} {tar}")
+	assert(fresh == "new.txt" && second == "alpha-2", "{fresh} {second}")
+}
+
+fn test_a_copy_beside_itself_and_a_link_into_its_target() {
+	build("wt-beside.tmp")
+
+	let base = fs.realpath("wt-beside.tmp") else ""
+	var dup = List[str]()
+
+	(mut dup).push("copy")
+	(mut dup).push(base + "/src")
+	(mut dup).push(base + "/src/a.txt")
+
+	let one = worker.main(dup)
+	let twin = fs.read_text("wt-beside.tmp/src/a-1.txt") else "?"
+
+	// A link to a directory may go into that directory: it is copied as
+	// a link, never followed.
+	fs.symlink("src", "wt-beside.tmp/to-src") else |_| {}
+
+	var link = List[str]()
+
+	(mut link).push("copy")
+	(mut link).push(base + "/src")
+	(mut link).push(base + "/to-src")
+
+	let two = worker.main(link)
+	let kind = kind_of("wt-beside.tmp/src/to-src")
+
+	fs.remove_dir_all("wt-beside.tmp") else |_| {}
+
+	assert(one == 0 && twin == "alpha", "beside itself: {one} {twin}")
+	assert(two == 0 && kind == 3, "a link into its target: {two} {kind}")
 }
