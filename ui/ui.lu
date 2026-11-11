@@ -583,7 +583,7 @@ pub fn draw_preview(mut g: grid.Grid, look: grid.Look, pv: preview.Preview, home
 	}
 
 	let path = str_from_utf8(pv.path) else ""
-	let note = str_from_utf8(pv.path) else ""
+	let note = str_from_utf8(pv.note) else ""
 
 	if pv.kind == preview.NOTE {
 		draw_note(mut g, look, path, note, home)
