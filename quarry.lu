@@ -78,6 +78,7 @@ struct App {
 	dlg: dialog.Dialog,
 	copying: job.Job,
 	queue: job.Queue,
+	meant: int,
 }
 
 
@@ -102,8 +103,11 @@ fn say(mut a: App, text: str) {
 	}
 }
 
-/// Draw, diff, write once. The strings built while drawing and the 
-/// escape sequences buillt while rendering die with the region
+/// Draw, diff, write. The strings built while drawing and the 
+/// escape sequences buillt while rendering die with the region. While
+/// the right pane is the view of the left cursor, the rest of the screen
+/// is written first and the right pane after it, a row at a time, so a
+/// key never waits on a preview being drawn.
 fn paint(mut a: App) {
 	(mut a.out).reset()
 
@@ -144,16 +148,107 @@ fn paint(mut a: App) {
 		if a.help {
 			ui.draw_help(mut a.back, a.look)
 		}
-		
-		let _ = grid.render(a.front, a.back, mut a.out)	
+	}
+
+	let big = a.back.cols >= ui.MIN_COLS && a.back.rows >= ui.MIN_ROWS
+	let split = big && a.active == a.view.left && a.dlg.kind == dialog.NONE && !a.help
+
+	if !split {
+		region scratch {
+			let _ = grid.render(a.front, a.back, mut a.out)	
+		}
+
+		tty.write(a.out) else |_| {
+			a.running = false
+		}
+
+		grid.assign(mut a.front, a.back)
+		a.dirty = false
+
+		return
+	}
+
+	// The cursor's side first: the left pane, the status line, the key bar
+	let half = a.back.cols / 2
+	let bottom = a.back.rows - 2
+
+	region scratch {
+		let _ = grid.render_part(a.front, a.back, mut a.out, 0, bottom, 0, half)
+		let _ = grid.render_part(a.front, a.back, mut a.out, bottom, a.back.rows, 0, a.back.cols)
 	}
 
 	tty.write(a.out) else |_| {
 		a.running = false
 	}
 
-	grid.assign(mut a.front, a.back)
+	grid.assign_part(mut a.front, a.back, 0, bottom, 0, half)
+	grid.assign_part(mut a.front, a.back, bottom, a.back.rows, 0, a.back.cols)
 	a.dirty = false
+
+	view_rows(mut a, half, bottom)
+}
+
+/// The right pane, a row at a time, while it is the view of the item
+/// under the left cursor. A key waiting stops it: the key moves the cursor
+/// first, and the rows left are drawn once the cursor rests. A view the
+/// cursor has moved off is not drawn at all; the one it rests on replaces it.
+fn view_rows(mut a: App, half: int, bottom: int) {
+	var current = true
+	region scratch {
+		current = nav.current(a.panes, a.view)
+	}
+
+	if !current {
+		return
+	}
+
+	var r = 0
+	while r < bottom && a.running {
+		(mut a.out).reset()
+
+		var n = 0
+		region scratch {
+			n = grid.render_part(a.front, a.back, mut a.out, r, r + 1, half, a.back.cols)
+		}
+
+		if n > 0 {
+			if waiting(mut a) {
+				a.dirty = true
+				return
+			}
+
+			tty.write(a.out) else |_| {
+				a.running = false
+			}
+
+			grid.assign_part(mut a.front, a.back, r, r + 1, half, a.back.cols)
+		}
+
+		r += 1
+	}
+}
+
+/// Whether a key (or a signal) is waiting. A signal the look sees is kept
+/// in `meant` for the loop, never dropped.
+fn waiting(mut a: App) -> bool {
+	var ready = false
+	var meant = 0
+
+	region scratch {
+		var keyboard = List[fs.File]()
+		(mut keyboard).push(fs.stdin())
+
+		let w = tty.wait(keyboard, 0) else |_| {
+			signal.Wake { meaning: 0, ready: -1 }
+		}
+
+		meant = w.meaning
+		ready = w.ready == 0
+	}
+
+	a.meant = a.meant | meant
+
+	ready || meant != 0
 }
 
 /// How long the wait may sleep: until the ESC deadline, or the next look
@@ -521,6 +616,11 @@ fn track(mut a: App, pressed: bool) {
 	}
 
 	if now < a.due_ms {
+		return
+	}
+
+	// A key already waiting moves the cursor first: the view waits for it to rest
+	if waiting(mut a) {
 		return
 	}
 
@@ -1064,11 +1164,13 @@ fn run(mut a: App) {
 			(mut pipe).push(a.copying.out)
 		}
 
-		let w = tty.wait(files, wait_ms(a)) else |_| {
+		// A signal a paint saw is handled now, without sleeping first
+		let w = tty.wait(files, if a.meant != 0 then 0 else wait_ms(a)) else |_| {
 			break
 		}
 
-		var meaning = w.meaning
+		var meaning = w.meaning | a.meant
+		a.meant = 0
 
 		if w.ready == 0 {
 			meaning = meaning | drain(mut a, files)
@@ -1110,7 +1212,6 @@ fn run(mut a: App) {
 			break
 		}
 
-		poll_disk(mut a)
 		var pressed = false
 		while a.running && keys.next(mut a.dec, now_ms(), mut k) {
 			pressed = true
@@ -1118,7 +1219,9 @@ fn run(mut a: App) {
 				on_key(mut a, k)
 			}
 		}
-		
+
+		// The keys first: the look at the disk and the view come after them
+		poll_disk(mut a)
 		track(mut a, pressed)
 	}
 
@@ -1209,6 +1312,7 @@ fn main() -> !int {
 		dlg: dialog.closed(),
 		copying: job.idle(),
 		queue: job.queue(),
+		meant: 0,
 	}
 
 	viewed(mut a)
