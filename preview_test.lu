@@ -167,6 +167,27 @@ fn test_the_cache_keeps_a_preview_until_its_file_changes() {
 	assert(c.slots.len == preview.CACHE_SLOTS, "the cache never grouws: {c.slots.len}")
 }
 
+fn test_a_hex_row_uses_the_whole_width() {
+	// 12 bytes take 4 + 3 * 9 + 2 + 12 = 45 columns: a pane 45 wide holds them
+	let at45 = preview.per_row(45)
+	let at44 = preview.per_row(44)
+
+	assert(at45 == 12, "45 columns hold 12 bytes: {at45}")
+	assert(at44 == 8, "44 columns hold 8: {at44}")
+}
+
+fn test_a_zip_archive_is_named() {
+	var head = List[byte]()
+
+	for x in [80, 75, 3, 4, 20, 0, 0, 0] {
+		(mut head).push(x as byte)
+	}
+
+	let what = preview.magic(head)
+
+	assert(what == "zip archive", "zip: {what}")
+}
+
 
 
 
