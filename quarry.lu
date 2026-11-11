@@ -45,6 +45,12 @@ const ACT_RENAME: int = 2
 /// What a dialog's yes does: delete the targets.
 const ACT_DELETE: int = 3
 
+/// What a dialog's yes does: stop the running copy and the ones waiting.
+const ACT_STOP: int = 4
+
+/// What a dialog's yes does: stop the copies and quit.
+const ACT_QUIT: int = 5
+
 /// Everything the program knows
 struct App {
 	t: tty.Tty, 
@@ -70,6 +76,7 @@ struct App {
 	next_poll_ms: int,
 	dlg: dialog.Dialog,
 	copying: job.Job,
+	queue: job.Queue,
 }
 
 
@@ -127,7 +134,7 @@ fn paint(mut a: App) {
 			}
 		}
 		if a.copying.running {
-			ui.draw_progress(mut a.back, a.look, a.copying)
+			ui.draw_progress(mut a.back, a.look, a.copying, a.queue.count)
 		}
 
 		if a.dlg.kind != dialog.NONE {
@@ -687,15 +694,22 @@ fn act(mut a: App) {
 		rename(mut a, text)
 	} else if action == ACT_DELETE {
 		delete(mut a)
+	} else if action == ACT_STOP {
+		job.cancel(mut a.copying)
+		job.drop_all(mut a.queue)
+		say(mut a, "stopping the copy")
+	} else if action == ACT_QUIT {
+		a.running = false
 	}
 }
 
-/// Start the payload's copy into `dest`, in the background, with the
-/// first guide's worker. Answers false, having said why, when it can't.
+/// Start the payload's copy into `dest`, in the background, or queue it
+/// behind the copy that is running (the progress line counts the queue).
+/// Answers false, having said why, when it can't.
 fn start_copy(mut a: App, dest: str) -> bool {
 	if a.copying.running {
-		say(mut a, "a copy is already running")
-		return false
+		job.enqueue(mut a.queue, dest, paste.sources(a.payload))
+		return true
 	}
 	let exe = os_exe() else |_| {
 		say(mut a, "cannot find quarry's own program to start the copy")
@@ -823,9 +837,12 @@ fn land(mut a: App) {
 	(mut a.land).reset()
 }
 
-/// The worker ended: say how, remove what a cancel left behind, reload.
+/// The worker ended: say how, remove what a cancel left behind, reload,
+/// put a cursor on the copy, and start the next copy that waits.
 fn finish_copy(mut a: App) {
 	let removed = job.clean_up(mut a.copying)
+	let first = str_from_utf8(a.copying.first) else ""
+	let made = fs.file_name(str_from_utf8(a.copying.into) else "") else ""
 
 	if a.copying.cancelled {
 		if removed != "" {
@@ -836,14 +853,55 @@ fn finish_copy(mut a: App) {
 	} else if a.copying.status != 0 {
 		let why = str_from_utf8(a.copying.failure) else ""
 		say(mut a, "copy failed: {why}")
+	} else if made != "" && made != first {
+		say(mut a, "copied {first} as {made}")
 	} else {
-		say(mut a, "copied {a.copying.files} items, {pane.human_size(a.copying.bytes)}")
+		let n = a.copying.files
+		let items = if n == 1 then "item" else "items"
+		say(mut a, "copied {n} {items}, {pane.human_size(a.copying.bytes)}")
+	}
+
+	// The worker named the copy it made: that is where the cursor lands.
+	if a.copying.into.len > 0 {
+		(mut a.land).reset()
+
+		for b in a.copying.into {
+			(mut a.land).push(b)
+		}
 	}
 
 	reload(mut a, 0)
 	reload(mut a, 1)
 	land(mut a)
 	a.dirty = true
+	next_copy(mut a)
+}
+
+/// Start the copy at the front of the queue, if one waits.
+fn next_copy(mut a: App) {
+	let next = job.dequeue(mut a.queue)
+	if next.len < 2 {
+		return
+	}
+
+	let exe = os_exe() else |_| {
+		say(mut a, "cannot find quarry's own program to start the copy")
+		return
+	}
+
+	job.start(mut a.copying, exe, next[0], next[1..next.len]) else |e| {
+		say(mut a, "cannot start the next copy: {e}")
+	}
+}
+
+/// `q`, F10 and Ctrl-C: quit, or, with a copy running, ask first.
+fn quit(mut a: App) {
+	if a.copying.running {
+		dialog.ask(mut a.dlg, ACT_QUIT, "A copy is running: stop it and quit? (y/N)")
+		return
+	}
+
+	a.running = false
 }
 
 /// Read the worker's pipe when it has something. `pipe` holds only the
@@ -922,7 +980,7 @@ fn on_key(mut a: App, k: keys.Key) {
 	let plain = k.mods == 0
 
 	if c == 113 && plain || c == keys.K_F0 + 10 {
-		a.running = false
+		quit(mut a)
 	} else if c == keys.K_DOWN {
 		pane.move_by(mut a.panes[a.active], 1)
 	} else if c == keys.K_UP {
@@ -959,8 +1017,7 @@ fn on_key(mut a: App, k: keys.Key) {
 	} else if c == keys.K_F0 + 5 || c == 99 && plain {
 		enter_copy(mut a)
 	} else if c == keys.K_ESC && a.copying.running {
-		job.cancel(mut a.copying)
-		say(mut a, "cancelling the copy")
+		dialog.ask(mut a.dlg, ACT_STOP, "Stop the copy? (y/N)")
 	}
 
 	 else if c == 32 && plain || c == keys.K_INS {
@@ -1016,15 +1073,18 @@ fn run(mut a: App) {
 		if meaning & signal.resize() != 0 {
 			resized(mut a)
 		}
-		// Ctrl-C closes an open dialog, or leaves copy mode, instead of
-		// quitting.
-		if meaning & signal.interrupt() != 0 && (a.dlg.kind != dialog.NONE || a.copy_mode) {
+		// Ctrl-C closes an open dialog, leaves copy mode, or asks before
+		// it stops a copy, instead of quitting.
+		let busy = a.dlg.kind != dialog.NONE || a.copy_mode || a.copying.running
+		if meaning & signal.interrupt() != 0 && busy {
 			if a.dlg.kind != dialog.NONE {
 				dialog.close(mut a.dlg)
-			} else {
+			} else if a.copy_mode {
 				region scratch {
 					cancel_copy(mut a)
 				}
+			} else {
+				quit(mut a)
 			}
 			meaning = meaning & !signal.interrupt()
 			a.dirty = true
@@ -1131,6 +1191,7 @@ fn main() -> !int {
 		next_poll_ms: now_ms() + POLL_MS,
 		dlg: dialog.closed(),
 		copying: job.idle(),
+		queue: job.queue(),
 	}
 
 	viewed(mut a)
