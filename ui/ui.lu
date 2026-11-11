@@ -623,7 +623,7 @@ pub fn draw_preview(mut g: grid.Grid, look: grid.Look, pv: preview.Preview, home
 	let per = preview.per_row(w)
 
 	var r = 0
-	while r + 3 <= rows && r < preview.hex_rows(pv, per) {
+	while r + 3 <= rows && r < preview.hex_rows(pv, per) && r < preview.HEX_ROWS {
 		let row = preview.hex_row(pv, r, per)
 		let _ = grid.puts(mut g, r + 3, left + 2, w, row, grid.DEFAULT, grid.DEFAULT, 0)
 
