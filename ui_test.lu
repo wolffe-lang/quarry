@@ -1,9 +1,10 @@
 //! member: false
 //! ui's tests: draw into a grid and read the grid back as text. No
-//! terminal, so a layout change shows up here first
+//! terminal, so a layout change shows up here first.
 
 use grid
 use pane
+use paste
 use preview
 use std.fs
 use ui
@@ -11,12 +12,13 @@ use ui
 fn test_fit_keeps_both_ends() {
 	assert(ui.fit("short", 10) == "short", "fits")
 	assert(ui.fit("abcdefghij", 7) == "abc~hij", "cut: {ui.fit("abcdefghij", 7)}")
-	assert(ui.cells("cafe") == 4, "four cells")
-	assert(ui.head("cafe", 4) == "cafe" && ui.tail("cafe", 2) == "fe", "head and tail")
+	assert(ui.fit("café-au-lait", 7) == "caf~ait", "by code point: {ui.fit("café-au-lait", 7)}")
+	assert(ui.cells("café") == 4, "four cells")
+	assert(ui.head("café", 4) == "café" && ui.tail("café", 2) == "fé", "head and tail")
 }
 
 fn test_short_path_uses_tilde_and_cuts_from_the_left() {
-	assert(ui.short_path("/home/me","/home/me", 20) == "~", "home itself")
+	assert(ui.short_path("/home/me", "/home/me", 20) == "~", "home itself")
 	assert(ui.short_path("/home/me/src", "/home/me", 20) == "~/src", "under home")
 	assert(ui.short_path("/home/meat", "/home/me", 20) == "/home/meat", "not under home")
 	assert(ui.short_path("/a/very/long/path/here", "", 12) == "...path/here", "cut")
@@ -26,62 +28,118 @@ fn test_two_panes_at_80_by_24() {
 	fs.remove_dir_all("ut-screen.tmp") else |_| {}
 	fs.create_dir_all("ut-screen.tmp/docs") else |_| {}
 	fs.write_text("ut-screen.tmp/readme.md", "hello") else |_| {}
-
 	let base = fs.realpath("ut-screen.tmp") else ""
 	let home = fs.parent(base) else ""
 	var p = pane.new(base)
-
 	pane.load(mut p) else |_| {
 		assert(false, "load failed")
 	}
-
 	var g = grid.new(24, 80)
 	let look = grid.Look { gl: grid.box_glyphs(), color: false }
-
-	ui.draw(mut g, look, p, p, 0, home, "", " Tab Pane   q Quit")
-
+	ui.draw(mut g, look, p, p, 0, home, "", " Tab Pane  q Quit")
 	let top = grid.row_text(g, 0)
 	let first = grid.row_text(g, 1)
 	let second = grid.row_text(g, 2)
 	let status = grid.row_text(g, 22)
 	let bar = grid.row_text(g, 23)
 	let bottom = grid.row_text(g, 21)
-
 	fs.remove_dir_all("ut-screen.tmp") else |_| {}
-
+	assert(top.starts_with("┌─ ~/ut-screen.tmp ─"), "title: {top}")
 	assert(ui.cells(top) == 80, "the top row is 80 cells")
+	assert(first.starts_with("│ docs/ ") && ui.tail(first, 7) == "<DIR> │", "row 1: {first}")
+	assert(second.starts_with("│ readme.md ") && ui.tail(second, 3) == "5 │", "row 2: {second}")
+	assert(ui.head(ui.tail(top, 41), 2) == "┐┌", "two boxes, never one split: {top}")
+	assert(
+		bottom.starts_with("└──") && ui.head(ui.tail(bottom, 41), 2) == "┘└",
+		"two boxes: {bottom}",
+	)
 	assert(status.starts_with(" drwx"), "status: {status}")
-	assert(bar.starts_with(" Tab Pane   q Quit"), "key bar: {bar}")
+	assert(bar.starts_with(" Tab Pane  q Quit"), "key bar: {bar}")
+}
+
+fn test_a_note_in_the_right_pane() {
+	var g = grid.new(24, 80)
+	let look = grid.Look { gl: grid.box_glyphs(), color: false }
+	let p = pane.new("/")
+	ui.draw(mut g, look, p, p, 0, "", "", "")
+	ui.draw_note(mut g, look, "/x/locked", "cannot list locked: denied", "")
+	let top = ui.tail(grid.row_text(g, 0), 40)
+	let first = ui.tail(grid.row_text(g, 1), 40)
+	let second = ui.tail(grid.row_text(g, 2), 40)
+	assert(top.starts_with("┌─ /x/locked ─") && top.ends_with("─┐"), "title: {top}")
+	assert(
+		first.starts_with("│ cannot list locked: denied ") && first.ends_with(" │"),
+		"note: {first}",
+	)
+	assert(second == "│                                      │", "the box is cleared: {second}")
+	ui.draw_note(mut g, look, "/x/dangling", "dangling points at nowhere, which is not there", "")
+	let one = ui.tail(grid.row_text(g, 1), 40)
+	let two = ui.tail(grid.row_text(g, 2), 40)
+	assert(one == "│ dangling points at nowhere, which is │", "wrapped: {one}")
+	assert(two == "│ not there                            │", "wrapped: {two}")
 }
 
 fn test_the_ghost_marks_the_left_cursor() {
 	fs.remove_dir_all("ut-ghost.tmp") else |_| {}
 	fs.create_dir_all("ut-ghost.tmp/docs") else |_| {}
-
 	var p = pane.new("ut-ghost.tmp")
 	pane.load(mut p) else |_| {
 		assert(false, "load failed")
 	}
-
 	var g = grid.new(24, 80)
 	let look = grid.Look { gl: grid.box_glyphs(), color: false }
-
 	ui.draw(mut g, look, p, p, 1, "", "", "")
-
 	let left = ui.head(grid.row_text(g, 1), 40)
 	let right = ui.tail(grid.row_text(g, 1), 40)
 	let ascii = grid.Look { gl: grid.ascii_glyphs(), color: false }
-
 	ui.draw(mut g, ascii, p, p, 1, "", "", "")
-
 	let plain = ui.head(grid.row_text(g, 1), 40)
-
 	fs.remove_dir_all("ut-ghost.tmp") else |_| {}
-
-	// assert(left.starts_with(""), "the ghost: {left}")
-	// assert(right.starts_with(""), "the ghost where the cursor is: {right}")
+	assert(left.starts_with("│»docs/ "), "the ghost: {left}")
+	assert(right.starts_with("│ docs/ "), "no ghost where the cursor is: {right}")
 	assert(plain.starts_with("|>docs/ "), "ASCII: {plain}")
 }
 
-// fn test_a_preview_in_the_right_pane() {
-// }
+fn test_a_preview_in_the_right_pane() {
+	fs.write_text("ut-preview.tmp", "Groceries\n\t- flour\n") else |_| {}
+	var c = preview.cache()
+	let at = preview.look(mut c, "ut-preview.tmp")
+	var g = grid.new(24, 80)
+	let look = grid.Look { gl: grid.box_glyphs(), color: false }
+	let p = pane.new("/")
+	ui.draw(mut g, look, p, p, 0, "", "", "")
+	ui.draw_preview(mut g, look, c.slots[at], "")
+	let top = ui.tail(grid.row_text(g, 0), 40)
+	let one = ui.tail(grid.row_text(g, 1), 40)
+	let two = ui.tail(grid.row_text(g, 2), 40)
+	fs.remove("ut-preview.tmp") else |_| {}
+	assert(top.starts_with("┌─ ut-preview.tmp ─"), "title: {top}")
+	assert(one == "│ Groceries                            │", "line 1: {one}")
+	assert(two == "│     - flour                          │", "line 2: {two}")
+}
+
+fn test_sticky_rows_in_copy_mode() {
+	fs.remove_dir_all("ut-sticky.tmp") else |_| {}
+	fs.create_dir_all("ut-sticky.tmp/docs") else |_| {}
+	fs.write_text("ut-sticky.tmp/notes.txt", "n") else |_| {}
+	var p = pane.new("ut-sticky.tmp")
+	pane.load(mut p) else |_| {
+		assert(false, "load failed")
+	}
+	p.cursor = 1
+	var pl = paste.none()
+	let _ = paste.collect(mut pl, p)
+	p.cursor = 0
+	var g = grid.new(24, 80)
+	let look = grid.Look { gl: grid.box_glyphs(), color: false }
+	ui.draw(mut g, look, p, p, 0, "", "", "")
+	ui.draw_sticky(mut g, look, p, 0, pl)
+	ui.draw_sticky(mut g, look, p, 1, pl)
+	let left = ui.head(grid.row_text(g, 2), 40)
+	let right = ui.tail(grid.row_text(g, 2), 40)
+	let other = ui.head(grid.row_text(g, 1), 40)
+	fs.remove_dir_all("ut-sticky.tmp") else |_| {}
+	assert(left.starts_with("│+notes.txt "), "sticky on the left: {left}")
+	assert(right.starts_with("│+notes.txt "), "sticky on the right: {right}")
+	assert(other.starts_with("│ docs/ "), "the rest as it was: {other}")
+}

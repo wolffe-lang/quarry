@@ -1,0 +1,101 @@
+//! member: false
+//! paste's tests: copy mode's rules on a real tree, with panes on it as
+//! quarry holds them. Nothing is copied.
+
+use pane
+use paste
+use std.fs
+
+fn tree(root: str) {
+	fs.remove_dir_all(root) else |_| {}
+	fs.create_dir_all("{root}/alpha/inner") else |_| {}
+	fs.write_text("{root}/alpha/a.txt", "a") else |_| {}
+	fs.create_dir_all("{root}/empty") else |_| {}
+	fs.write_text("{root}/notes.txt", "notes") else |_| {}
+	fs.write_text("{root}/zz.txt", "z") else |_| {}
+	fs.symlink("alpha/inner", "{root}/link-in") else |_| {}
+}
+
+/// A pane on `path`, loaded, its cursor on row `at`.
+fn pane_at(path: str, at: int) -> pane.Pane {
+	var p = pane.new(fs.realpath(path) else path)
+	pane.load(mut p) else |_| {}
+	p.cursor = at
+	p
+}
+
+fn test_the_payload_is_the_cursor_or_the_marks() {
+	tree("ps-take.tmp")
+	var p = pane_at("ps-take.tmp", 3)
+	var pl = paste.none()
+	let one = paste.collect(mut pl, p)
+	let name = paste.name(pl, 0)
+	let src = paste.sources(pl)[0]
+	let held = paste.shows(pl, p) && paste.holds(pl, p, 3) && !paste.holds(pl, p, 4)
+	pane.toggle_mark(mut p)
+	p.cursor = 4
+	pane.toggle_mark(mut p)
+	let two = paste.collect(mut pl, p)
+	let both = paste.holds(pl, p, 3) && paste.holds(pl, p, 4)
+	let elsewhere = paste.shows(pl, pane_at("ps-take.tmp/alpha", 0))
+	paste.clear(mut pl)
+	let cleared = paste.count(pl) == 0 && !paste.shows(pl, p)
+	fs.remove_dir_all("ps-take.tmp") else |_| {}
+	assert(
+		one == 1 && name == "notes.txt" && src.ends_with("/ps-take.tmp/notes.txt"),
+		"{one} {name} {src}",
+	)
+	assert(held, "the cursor's row is sticky, and only it")
+	assert(two == 2 && both, "the marks are the payload: {two}")
+	assert(!elsewhere, "another directory holds nothing sticky")
+	assert(cleared, "cleared")
+}
+
+fn test_into_a_directory_beside_a_file_into_an_empty_one() {
+	tree("ps-rules.tmp")
+	var pl = paste.none()
+	let _ = paste.collect(mut pl, pane_at("ps-rules.tmp", 3))
+	let into = paste.decide(pl, pane_at("ps-rules.tmp", 0), false)
+	let from_left = paste.decide(pl, pane_at("ps-rules.tmp", 4), false)
+	let beside = paste.decide(pl, pane_at("ps-rules.tmp/alpha", 1), true)
+	let here = paste.decide(pl, pane_at("ps-rules.tmp/empty", 0), true)
+	let h_into = paste.hint(pl, into)
+	let h_left = paste.hint(pl, from_left)
+	let h_beside = paste.hint(pl, beside)
+	let h_here = paste.hint(pl, here)
+	fs.remove_dir_all("ps-rules.tmp") else |_| {}
+	assert(
+		into.rule == paste.INTO && into.dest.ends_with("/ps-rules.tmp/alpha"),
+		"into: {into.dest}",
+	)
+	assert(h_into == "copy notes.txt: Enter pastes it into alpha/", h_into)
+	assert(from_left.rule == paste.FROM_LEFT, "a file in the left pane: {from_left.rule}")
+	assert(h_left == "copy notes.txt: to paste beside zz.txt, pick it in the right pane", h_left)
+	assert(beside.rule == paste.BESIDE && beside.dest.ends_with("/alpha"), "beside: {beside.dest}")
+	assert(h_beside == "copy notes.txt: Enter pastes it beside a.txt", h_beside)
+	assert(here.rule == paste.HERE && here.dest.ends_with("/empty"), "here: {here.dest}")
+	assert(h_here == "copy notes.txt: Enter pastes it into empty/", h_here)
+}
+
+fn test_never_into_itself_nor_below_itself() {
+	tree("ps-self.tmp")
+	var pl = paste.none()
+	let _ = paste.collect(mut pl, pane_at("ps-self.tmp", 0))
+	let onto = paste.decide(pl, pane_at("ps-self.tmp", 0), false)
+	let below = paste.decide(pl, pane_at("ps-self.tmp/alpha", 0), true)
+	let inside = paste.decide(pl, pane_at("ps-self.tmp/alpha", 1), true)
+	let via_link = paste.decide(pl, pane_at("ps-self.tmp", 2), false)
+	let hint = paste.hint(pl, onto)
+	var p = pane_at("ps-self.tmp", 0)
+	pane.toggle_mark(mut p)
+	p.cursor = 3
+	pane.toggle_mark(mut p)
+	let _ = paste.collect(mut pl, p)
+	let many = paste.hint(pl, paste.decide(pl, pane_at("ps-self.tmp", 0), false))
+	fs.remove_dir_all("ps-self.tmp") else |_| {}
+	assert(onto.rule == paste.ITSELF && below.rule == paste.ITSELF, "{onto.rule} {below.rule}")
+	assert(inside.rule == paste.ITSELF, "beside a file inside it: {inside.rule}")
+	assert(via_link.rule == paste.ITSELF, "through a link into it: {via_link.rule}")
+	assert(hint == "copy alpha: cannot paste it into itself", hint)
+	assert(many == "copy 2 items: cannot paste them into one of them", many)
+}

@@ -22,20 +22,16 @@ fn panes_on(root: str) -> List[pane.Pane] {
 	(mut panes).push(pane.new(path))
 	(mut panes).push(pane.new(path))
 	pane.load(mut panes[0]) else |_| {}
-
 	panes
 }
 
 fn names(p: pane.Pane) -> str {
 	var s = ""
-
 	var i = 0
 	while i < p.entries.len {
 		s += pane.display_name(p, i) + " "
-
 		i += 1
 	}
-
 	s
 }
 
@@ -43,15 +39,11 @@ fn test_the_right_pane_lists_the_directory_under_the_cursor() {
 	tree("nt-list.tmp")
 	var panes = panes_on("nt-list.tmp")
 	var v = nav.start()
-
 	nav.follow(mut panes, mut v)
-
 	let left = names(panes[0])
 	let right = names(panes[1])
 	let at = pane.path_of(panes[1])
-
 	fs.remove_dir_all("nt-list.tmp") else |_| {}
-
 	assert(left == "alpha empty dangling notes.txt ", "left: {left}")
 	assert(v.shows == nav.SHOWS_LISTING, "shows {v.shows}")
 	assert(right == "inner a.txt ", "right: {right}")
@@ -63,22 +55,18 @@ fn test_a_file_a_dangling_link_and_an_empty_directory() {
 	var panes = panes_on("nt-kinds.tmp")
 	var v = nav.start()
 	panes[0].cursor = 3
-
 	nav.follow(mut panes, mut v)
 	let file = v.shows
 	let of = str_from_utf8(v.of) else ""
 	panes[0].cursor = 2
-
 	nav.follow(mut panes, mut v)
 	let dangling = v.shows
 	let why = str_from_utf8(v.why) else ""
 	panes[0].cursor = 1
-
 	nav.follow(mut panes, mut v)
 	let empty = v.shows
 	let rows = panes[1].entries.len
 	fs.remove_dir_all("nt-kinds.tmp") else |_| {}
-
 	assert(file == nav.SHOWS_FILE && of.ends_with("/notes.txt"), "a file: {file} {of}")
 	assert(dangling == nav.SHOWS_NOTHING, "a dangling link: {dangling}")
 	assert(why == "dangling points at nowhere, which is not there", "why: {why}")
@@ -89,21 +77,16 @@ fn test_a_listing_it_holds_is_kept_until_it_changes() {
 	tree("nt-keep.tmp")
 	var panes = panes_on("nt-keep.tmp")
 	var v = nav.start()
-
 	nav.follow(mut panes, mut v)
 	panes[1].cursor = 1
-
 	nav.follow(mut panes, mut v)
 	let kept = panes[1].cursor
-
 	// A directory's time moves when a name is added; set it explicitly
 	// so a coarse clock cannot hide the change.
 	fs.write_text("nt-keep.tmp/alpha/b.txt", "b") else |_| {}
 	fs.set_times("nt-keep.tmp/alpha", fs.time_keep(), fs.time(panes[1].seen_s + 5, 0)) else |_| {}
-
 	nav.follow(mut panes, mut v)
 	let right = names(panes[1])
-
 	fs.remove_dir_all("nt-keep.tmp") else |_| {}
 	assert(kept == 1, "the cursor stays where it was: {kept}")
 	assert(right == "inner a.txt b.txt ", "read again when it changed: {right}")
@@ -114,14 +97,11 @@ fn test_current_sees_the_left_cursor_move() {
 	var panes = panes_on("nt-current.tmp")
 	var v = nav.start()
 	let before = nav.current(panes, v)
-
 	nav.follow(mut panes, mut v)
 	let made = nav.current(panes, v)
 	panes[0].cursor = 3
 	let moved = nav.current(panes, v)
-
 	fs.remove_dir_all("nt-current.tmp") else |_| {}
-
 	assert(!before && made && !moved, "{before} {made} {moved}")
 }
 
@@ -129,31 +109,24 @@ fn test_a_directory_it_cannot_list() {
 	tree("nt-locked.tmp")
 	fs.create_dir_all("nt-locked.tmp/locked") else |_| {}
 	fs.set_mode("nt-locked.tmp/locked", 0) else |_| {}
-
 	var panes = panes_on("nt-locked.tmp")
 	var v = nav.start()
 	let _ = pane.cursor_to(mut panes[0], "locked")
-
 	nav.follow(mut panes, mut v)
 	let why = str_from_utf8(v.why) else ""
-
 	fs.set_mode("nt-locked.tmp/locked", 493) else |_| {}
 	fs.remove_dir_all("nt-locked.tmp") else |_| {}
-
 	assert(v.shows == nav.SHOWS_NOTHING, "shows {v.shows}")
 	assert(why == "cannot list locked: denied", "why: {why}")
 }
 
 fn test_right_goes_in_then_slides_and_left_undoes_both() {
 	tree("nt-slide.tmp")
-
 	var panes = panes_on("nt-slide.tmp")
 	var v = nav.start()
-
 	nav.follow(mut panes, mut v)
 	let a = nav.go_right(mut panes, mut v, 0) else -1
 	let went_in = a == 1 && v.left == 0
-
 	// In alpha's listing the cursor is on inner/: Right slides.
 	let b = nav.go_right(mut panes, mut v, a) else -1
 	let slid = b == 0 && v.left == 1
@@ -164,7 +137,6 @@ fn test_right_goes_in_then_slides_and_left_undoes_both() {
 	let on = pane.display_name(panes[0], panes[0].cursor)
 	let kept = panes[1].cursor
 	fs.remove_dir_all("nt-slide.tmp") else |_| {}
-
 	assert(went_in, "into the right pane: {a} {v.left}")
 	assert(
 		slid && left_at.ends_with("/alpha") && right_at.ends_with("/alpha/inner"),
@@ -177,32 +149,26 @@ fn test_right_goes_in_then_slides_and_left_undoes_both() {
 
 fn test_a_peek_and_what_right_refuses() {
 	tree("nt-peek.tmp")
-
 	var panes = panes_on("nt-peek.tmp")
 	var v = nav.start()
 	nav.follow(mut panes, mut v)
 	let a = nav.go_right(mut panes, mut v, 0) else -1
 	panes[1].cursor = 1
-
 	let b = nav.go_right(mut panes, mut v, a) else -1
 	let peeked = b == 1 && v.left == 1 && v.shows == nav.SHOWS_FILE
 	let of = str_from_utf8(v.of) else ""
 	var on_file = ""
-
 	let _ = nav.go_right(mut panes, mut v, b) else |e| {
 		on_file = "{e}"
 		b
-	} 
-
+	}
 	let c = nav.go_left(mut panes, mut v, b) else -1
 	panes[c].cursor = 2
 	var on_link = ""
-
 	let _ = nav.go_right(mut panes, mut v, c) else |e| {
 		on_link = "{e}"
 		c
 	}
-
 	fs.remove_dir_all("nt-peek.tmp") else |_| {}
 	assert(peeked && of.ends_with("/alpha/a.txt"), "a peek: {b} {v.left} {v.shows} {of}")
 	assert(on_file == "file", "Right on a file in the left pane: {on_file}")
@@ -214,34 +180,27 @@ fn test_left_at_the_top() {
 	var panes = List[pane.Pane]()
 	(mut panes).push(pane.new("/"))
 	(mut panes).push(pane.new("/"))
-
 	pane.load(mut panes[0]) else |_| {}
 	var v = nav.start()
-
 	var tag = ""
 	let at = nav.go_left(mut panes, mut v, 0) else |e| {
 		tag = "{e}"
 		0
 	}
-
 	assert(tag == "top" && at == 0 && v.left == 0, "{tag} {at} {v.left}")
 }
 
 fn test_an_empty_directory_takes_the_cursor() {
 	tree("nt-empty.tmp")
 	var panes = panes_on("nt-empty.tmp")
-
 	var v = nav.start()
 	panes[0].cursor = 1
-
 	nav.follow(mut panes, mut v)
 	let a = nav.go_right(mut panes, mut v, 0) else -1
 	let nothing = nav.under(panes[1])
 	let b = nav.go_right(mut panes, mut v, a) else -1
 	let c = nav.go_left(mut panes, mut v, b) else -1
-
 	fs.remove_dir_all("nt-empty.tmp") else |_| {}
-
 	assert(a == 1 && nothing == nav.ITEM_NONE, "in: {a} {nothing}")
 	assert(b == 1 && c == 0, "Right stays, Left comes back: {b} {c}")
 }
@@ -249,23 +208,49 @@ fn test_an_empty_directory_takes_the_cursor() {
 fn test_right_catches_up_with_a_moving_cursor() {
 	tree("nt-catch.tmp")
 	var panes = panes_on("nt-catch.tmp")
-
 	var v = nav.start()
 	nav.follow(mut panes, mut v)
-
 	// The cursor moves to empty/, and Right comes before the view does.
 	panes[0].cursor = 1
-
 	let a = nav.go_right(mut panes, mut v, 0) else -1
 	let at = pane.path_of(panes[1])
-
 	fs.remove_dir_all("nt-catch.tmp") else |_| {}
-
 	assert(a == 1 && at.ends_with("/empty") && nav.current(panes, v), "caught up: {a} {at}")
 }
 
+fn test_a_spot_brings_the_cursor_back() {
+	tree("nt-spot.tmp")
+	var panes = panes_on("nt-spot.tmp")
+	var v = nav.start()
+	nav.follow(mut panes, mut v)
+	let a = nav.go_right(mut panes, mut v, 0) else -1
+	panes[a].cursor = 1
+	var s = nav.no_spot()
+	nav.mark_spot(mut s, panes, v, a)
+	// Wander off: back out, down to notes.txt.
+	let b = nav.go_left(mut panes, mut v, a) else -1
+	panes[b].cursor = 3
+	nav.follow(mut panes, mut v)
+	let c = nav.go_to(mut panes, mut v, s, b)
+	let on = pane.display_name(panes[c], panes[c].cursor)
+	let left = pane.display_name(panes[v.left], panes[v.left].cursor)
+	fs.remove_dir_all("nt-spot.tmp") else |_| {}
+	assert(c == 1 - v.left, "the cursor is in the right pane again: {c} {v.left}")
+	assert(on == "a.txt" && left == "alpha", "on {on}, under {left}")
+}
 
-
-
-
-
+fn test_bring_left_opens_the_directory_in_the_right_pane() {
+	tree("nt-bring.tmp")
+	var panes = panes_on("nt-bring.tmp")
+	var v = nav.start()
+	nav.follow(mut panes, mut v)
+	let a = nav.go_right(mut panes, mut v, 0) else -1
+	let b = nav.bring_left(mut panes, mut v, a)
+	let left = pane.path_of(panes[v.left])
+	let right = pane.path_of(panes[1 - v.left])
+	let on = pane.display_name(panes[b], panes[b].cursor)
+	fs.remove_dir_all("nt-bring.tmp") else |_| {}
+	assert(b == a && v.left == a, "the cursor's pane is the left one: {b} {v.left}")
+	assert(left.ends_with("/alpha") && right.ends_with("/alpha/inner"), "{left} {right}")
+	assert(on == "inner", "the cursor stays on its item: {on}")
+}
