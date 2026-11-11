@@ -424,7 +424,7 @@ pub fn line(pv: Preview, i: int) -> str {
 /// and the same bytes as text.
 pub fn per_row(width: int) -> int {
 	var n = 4
-	while 4 + (n + 4) / 4 * 9 + 2 + n + 4 < width {
+	while 4 + (n + 4) / 4 * 9 + 2 + n + 4 <= width {
 		n += 4
 	}
 
