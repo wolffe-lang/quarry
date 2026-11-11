@@ -83,3 +83,43 @@ fn test_a_whole_screen_after_invalidate() {
 	assert(n > 0)
 	assert(bytes_text(out) == "\x1b[1;1H\x1b[0m   \x1b[2;1H  ", "got {bytes_text(out)}")
 }
+
+fn test_a_part_renders_only_its_own_cells() {
+	let front = grid.new(3, 10)
+	var back = grid.new(3, 10)
+
+	grid.put(mut back, 0, 1, 65, grid.DEFAULT, grid.DEFAULT, 0)
+	grid.put(mut back, 0, 8, 66, grid.DEFAULT, grid.DEFAULT, 0)
+	grid.put(mut back, 2, 2, 67, grid.DEFAULT, grid.DEFAULT, 0)
+
+	var out = List[byte]()
+
+	grid.render_part(front, back, mut out, 0, 2, 0, 5)
+	assert(bytes_text(out) == "\x1b[1;2H\x1b[0mA", "got {bytes_text(out)}")
+}
+
+fn test_a_part_short_of_the_edge_never_erases_past_it() {
+	var front = grid.new(1, 10)
+	var back = grid.new(1, 10)
+
+	grid.fill(mut front, 0, 0, 10, 89, grid.DEFAULT, grid.DEFAULT, 0)
+	grid.put(mut back, 0, 0, 88, grid.DEFAULT, grid.DEFAULT, 0)
+
+	var out = List[byte]()
+
+	// The whole row would erase to its end; the left half writes its blanks
+	grid.render_part(front, back, mut out, 0, 1, 0, 5)
+	assert(bytes_text(out) == "\x1b[1;1H\x1b[0mX    ", "got {bytes_text(out)}")
+}
+
+fn test_assign_part_copies_only_its_cells() {
+	var front = grid.new(2, 4)
+	var back = grid.new(2, 4)
+
+	grid.fill(mut back, 0, 0, 4, 65, grid.DEFAULT, grid.DEFAULT, 0)
+	grid.fill(mut back, 1, 0, 4, 66, grid.DEFAULT, grid.DEFAULT, 0)
+	grid.assign_part(mut front, back, 1, 2, 2, 4)
+
+	assert(grid.row_text(front, 0) == "    ", "row 0: {grid.row_text(front, 0)}")
+	assert(grid.row_text(front, 1) == "  BB", "row 1: {grid.row_text(front, 1)}")
+}
