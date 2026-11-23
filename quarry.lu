@@ -1321,3 +1321,4 @@ fn main() -> !int {
 
 	0
 }
+// A planted line for the public-text check: qz97.
